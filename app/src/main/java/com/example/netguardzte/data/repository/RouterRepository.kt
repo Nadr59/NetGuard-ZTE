@@ -13,13 +13,11 @@ import kotlinx.coroutines.withContext
 
 class RouterRepository(private val storage: SecureStorage) {
 
-    // ═══ للتشخيص: آخر استجابة خام ═══
     var lastRawResponse: String = ""
         private set
     var lastWorkingCommand: String = ""
         private set
 
-    // ═══ تسجيل الدخول ═══
     suspend fun login(
         routerIp: String,
         username: String,
@@ -53,40 +51,36 @@ class RouterRepository(private val storage: SecureStorage) {
         }
     }
 
-    // ═══════════════════════════════════════════
-    // جلب الأجهزة — نجرب عدة أوامر
-    // ═══════════════════════════════════════════
     suspend fun getConnectedDevices(): Result<List<Device>> = withContext(Dispatchers.IO) {
         try {
             val api = RetrofitClient.getApi()
 
-            // ═══ قائمة الأوامر الممكنة ═══
             val commands = listOf(
-                "station_list" to { api.getStationList() },
-                "dhcp_list" to { api.getDhcpList() },
-                "client_list" to { api.getClientList() },
-                "lan_station_list" to { api.getLanStationList() },
-                "wifi_client_list" to { api.getWifiClientList() },
+                "station_list",
+                "dhcp_list",
+                "client_list",
+                "lan_station_list",
+                "wifi_client_list"
             )
 
-            for ((cmdName, apiCall) in commands) {
+            for (cmdName in commands) {
                 try {
-                    val response = apiCall()
+                    val response = api.getGenericCmd(cmd = cmdName)
+
                     if (response.isSuccessful) {
                         val rawBody = response.body()?.string() ?: ""
 
-                        // حفظ للتشخيص
                         if (rawBody.isNotBlank() && rawBody != "{}" && rawBody != "[]") {
                             lastRawResponse = rawBody
                             lastWorkingCommand = cmdName
                         }
 
-                        val devices = tryAllParsingMethods(rawBody, cmdName)
+                        val devices = tryAllParsingMethods(rawBody)
                         if (devices.isNotEmpty()) {
                             return@withContext Result.success(devices)
                         }
                     } else if (response.code() == 401) {
-                        autoRelogin()
+                        autoReloginRelay()
                         continue
                     }
                 } catch (_: Exception) {
@@ -94,10 +88,13 @@ class RouterRepository(private val storage: SecureStorage) {
                 }
             }
 
-            // ═══ إذا لم نجد أجهزة من أي أمر ═══
             if (lastRawResponse.isNotBlank()) {
                 Result.failure(
-                    Exception("لم يتم العثور على أجهزة.\nالأمر: $lastWorkingCommand\nالاستجابة: ${lastRawResponse.take(200)}")
+                    Exception(
+                        "لم يتم العثور على أجهزة.\n" +
+                        "الأمر: $lastWorkingCommand\n" +
+                        "الاستجابة: ${lastRawResponse.take(300)}"
+                    )
                 )
             } else {
                 Result.failure(Exception("لا توجد استجابة من الراوتر"))
@@ -108,35 +105,22 @@ class RouterRepository(private val storage: SecureStorage) {
         }
     }
 
-    // ═══════════════════════════════════════════
-    // تحليل الاستجابة — عدة طرق
-    // ═══════════════════════════════════════════
-    private fun tryAllParsingMethods(rawBody: String, cmdName: String): List<Device> {
+    private fun tryAllParsingMethods(rawBody: String): List<Device> {
         if (rawBody.isBlank()) return emptyList()
 
         try {
             val root = JsonParser.parseString(rawBody)
 
-            // ═══ الطريقة 1: البحث عن مصفوفة بأي اسم ═══
             if (root.isJsonObject) {
                 val obj = root.asJsonObject
 
-                // ابحث عن أي حقل يحتوي مصفوفة
                 for (key in obj.keySet()) {
                     val element = obj.get(key) ?: continue
                     val devices = tryParseDeviceArray(element)
                     if (devices.isNotEmpty()) return devices
                 }
-
-                // ابحث عن حقل station_list كنص
-                val stationList = obj.get("station_list")
-                if (stationList != null) {
-                    val devices = tryParseDeviceElement(stationList)
-                    if (devices.isNotEmpty()) return devices
-                }
             }
 
-            // ═══ الطريقة 2: المصفوفة مباشرة ═══
             if (root.isJsonArray) {
                 val devices = tryParseDeviceArray(root)
                 if (devices.isNotEmpty()) return devices
@@ -144,96 +128,98 @@ class RouterRepository(private val storage: SecureStorage) {
 
         } catch (_: Exception) {}
 
-        // ═══ الطريقة 3: Regex للبحث عن MAC في النص ═══
         return tryParseWithRegex(rawBody)
     }
 
-    private fun tryParseDeviceElement(element: JsonElement): List<Device> {
+    private fun tryParseDeviceArray(element: JsonElement): List<Device> {
         return when {
-            element.isJsonArray -> tryParseDeviceArray(element)
+            element.isJsonArray -> parseJsonArray(element.asJsonArray)
             element.isJsonPrimitive && element.asJsonPrimitive.isString -> {
                 val str = element.asString
                 if (str.isBlank()) return emptyList()
                 try {
                     val parsed = JsonParser.parseString(str)
-                    if (parsed.isJsonArray) tryParseDeviceArray(parsed)
+                    if (parsed.isJsonArray) parseJsonArray(parsed.asJsonArray)
                     else emptyList()
                 } catch (_: Exception) { emptyList() }
             }
             element.isJsonObject -> {
                 val obj = element.asJsonObject
-                val list = obj.get("station_list") ?: obj.get("devices") ?: obj.get("clients")
-                if (list != null) tryParseDeviceElement(list) else emptyList()
+                val list = obj.get("station_list")
+                    ?: obj.get("devices")
+                    ?: obj.get("clients")
+                if (list != null) tryParseDeviceArray(list)
+                else {
+                    val d = parseSingleDevice(obj)
+                    if (d != null) listOf(d) else emptyList()
+                }
             }
             else -> emptyList()
         }
     }
 
-    private fun tryParseDeviceArray(element: JsonElement): List<Device> {
-        if (!element.isJsonArray) return emptyList()
-
+    private fun parseJsonArray(array: JsonArray): List<Device> {
         val devices = mutableListOf<Device>()
-        for (item in element.asJsonArray) {
-            if (!item.isJsonObject) continue
-            val obj = item.asJsonObject
-            val mac = findMacInObject(obj)
-            if (mac.isNotBlank()) {
-                devices.add(
-                    Device(
-                        mac = mac.uppercase(),
-                        ip = findField(obj, "ip", "ip_addr", "ipAddress", "address"),
-                        hostname = findField(obj, "hostname", "name", "host_name", "device_name", "client_name")
-                            .ifBlank { "جهاز غير معروف" },
-                        connectionType = findField(obj, "conn_type", "wlan_type", "type", "connection")
-                            .ifBlank { "WiFi" }
-                    )
-                )
+        for (item in array) {
+            if (item.isJsonObject) {
+                val d = parseSingleDevice(item.asJsonObject)
+                if (d != null) devices.add(d)
             }
         }
         return devices
     }
 
-    // ═══ البحث عن MAC بأي اسم حقل ═══
-    private fun findMacInObject(obj: JsonObject): String {
-        val macFields = listOf("mac", "mac_addr", "mac_address", "MacAddress", "MAC", "hwaddr", "hw_addr")
-        for (field in macFields) {
-            val value = getFieldAsString(obj, field)
-            if (value.isNotBlank() && isValidMac(value)) return value
-        }
+    private fun parseSingleDevice(obj: JsonObject): Device? {
+        val mac = findMac(obj)
+        if (mac.isBlank()) return null
 
-        // ابحث في كل الحقول
+        return Device(
+            mac = mac.uppercase(),
+            ip = findField(obj, "ip", "ip_addr", "ipAddress", "address"),
+            hostname = findField(obj, "hostname", "name", "host_name", "device_name", "client_name")
+                .ifBlank { "جهاز غير معروف" },
+            connectionType = findField(obj, "conn_type", "wlan_type", "type", "connection")
+                .ifBlank { "WiFi" }
+        )
+    }
+
+    private fun findMac(obj: JsonObject): String {
+        val fields = listOf("mac", "mac_addr", "mac_address", "MacAddress", "MAC", "hwaddr")
+        for (f in fields) {
+            val v = getFieldStr(obj, f)
+            if (v.isNotBlank() && isValidMac(v)) return v
+        }
         for (key in obj.keySet()) {
-            val value = getFieldAsString(obj, key)
-            if (isValidMac(value)) return value
+            val v = getFieldStr(obj, key)
+            if (isValidMac(v)) return v
         }
-
         return ""
     }
 
     private fun findField(obj: JsonObject, vararg names: String): String {
-        for (name in names) {
-            val value = getFieldAsString(obj, name)
-            if (value.isNotBlank()) return value
+        for (n in names) {
+            val v = getFieldStr(obj, n)
+            if (v.isNotBlank()) return v
         }
         return ""
     }
 
-    private fun getFieldAsString(obj: JsonObject, field: String): String {
+    private fun getFieldStr(obj: JsonObject, field: String): String {
         return try {
-            val element = obj.get(field) ?: return ""
+            val el = obj.get(field) ?: return ""
             when {
-                element.isJsonNull -> ""
-                element.isJsonPrimitive -> element.asString
-                else -> element.toString()
+                el.isJsonNull -> ""
+                el.isJsonPrimitive -> el.asString
+                else -> el.toString()
             }
         } catch (_: Exception) { "" }
     }
 
-    private fun isValidMac(value: String): Boolean {
-        return Regex("[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}").matches(value.trim())
+    private fun isValidMac(v: String): Boolean {
+        return Regex("[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}")
+            .matches(v.trim())
     }
 
-    // ═══ استخراج MAC بالـ Regex من النص الخام ═══
     private fun tryParseWithRegex(raw: String): List<Device> {
         val macPattern = Regex("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}")
         val ipPattern = Regex("(\\d{1,3}\\.){3}\\d{1,3}")
@@ -243,39 +229,67 @@ class RouterRepository(private val storage: SecureStorage) {
 
         val ips = ipPattern.findAll(raw).map { it.value }.toList()
 
-        return macs.mapIndexed { index, mac ->
+        return macs.mapIndexed { i, mac ->
             Device(
                 mac = mac,
-                ip = ips.getOrNull(index) ?: "",
-                hostname = "جهاز ${index + 1}",
+                ip = ips.getOrNull(i) ?: "",
+                hostname = "جهاز ${i + 1}",
                 connectionType = "Unknown"
             )
         }
     }
 
-    // ═══ حظر / إلغاء حظر ═══
     suspend fun blockDevice(mac: String, currentBlockedList: List<String>): Result<String> =
         withContext(Dispatchers.IO) {
             try {
                 val api = RetrofitClient.getApi()
                 val newList = (currentBlockedList + mac.uppercase()).joinToString(";")
                 val response = api.setMacFilter(macList = newList)
-                if (response.isSuccessful) Result.success("تم حظر الجهاز")
-                else if (response.code() == 401) { autoRelogin(); retryBlock(mac, currentBlockedList) }
-                else Result.failure(Exception("فشل: ${response.code()}"))
-            } catch (e: Exception) { Result.failure(e) }
+
+                if (response.isSuccessful) {
+                    Result.success("تم حظر الجهاز")
+                } else if (response.code() == 401) {
+                    autoReloginRelay()
+                    val retry = RetrofitClient.getApi().setMacFilter(macList = newList)
+                    if (retry.isSuccessful) Result.success("تم الحظر")
+                    else Result.failure(Exception("فشل: ${retry.code()}"))
+                } else {
+                    Result.failure(Exception("فشل الحظر: ${response.code()}"))
+                }
+            } catch (e: Exception) {
+                Result.failure(Exception("فشل الحظر: ${e.message}"))
+            }
         }
 
     suspend fun unblockDevice(mac: String, currentBlockedList: List<String>): Result<String> =
         withContext(Dispatchers.IO) {
             try {
                 val api = RetrofitClient.getApi()
-                val newList = currentBlockedList.filter { it.uppercase() != mac.uppercase() }.joinToString(";")
-                val response = if (newList.isEmpty()) api.disableMacFilter() else api.setMacFilter(macList = newList)
-                if (response.isSuccessful) Result.success("تم إلغاء الحظر")
-                else if (response.code() == 401) { autoRelogin(); retryUnblock(mac, currentBlockedList) }
-                else Result.failure(Exception("فشل: ${response.code()}"))
-            } catch (e: Exception) { Result.failure(e) }
+                val newList = currentBlockedList
+                    .filter { it.uppercase() != mac.uppercase() }
+                    .joinToString(";")
+
+                val response = if (newList.isEmpty()) {
+                    api.disableMacFilter()
+                } else {
+                    api.setMacFilter(macList = newList)
+                }
+
+                if (response.isSuccessful) {
+                    Result.success("تم إلغاء الحظر")
+                } else if (response.code() == 401) {
+                    autoReloginRelay()
+                    val retryApi = RetrofitClient.getApi()
+                    val retry = if (newList.isEmpty()) retryApi.disableMacFilter()
+                    else retryApi.setMacFilter(macList = newList)
+                    if (retry.isSuccessful) Result.success("تم إلغاء الحظر")
+                    else Result.failure(Exception("فشل: ${retry.code()}"))
+                } else {
+                    Result.failure(Exception("فشل إلغاء الحظر: ${response.code()}"))
+                }
+            } catch (e: Exception) {
+                Result.failure(Exception("فشل إلغاء الحظر: ${e.message}"))
+            }
         }
 
     suspend fun getBlockedMacs(): Result<List<String>> = withContext(Dispatchers.IO) {
@@ -284,42 +298,47 @@ class RouterRepository(private val storage: SecureStorage) {
             if (response.isSuccessful) {
                 val body = response.body()?.string() ?: ""
                 Result.success(parseBlockedMacs(body))
-            } else Result.success(emptyList())
-        } catch (_: Exception) { Result.success(emptyList()) }
+            } else {
+                Result.success(emptyList())
+            }
+        } catch (_: Exception) {
+            Result.success(emptyList())
+        }
     }
 
     suspend fun logout() = withContext(Dispatchers.IO) {
-        try { RetrofitClient.getApi().logout() } catch (_: Exception) {}
+        try {
+            RetrofitClient.getApi().logout()
+        } catch (_: Exception) {}
         storage.setLoggedIn(false)
         RetrofitClient.setSessionCookie(null)
     }
 
+    private suspend fun autoReloginRelay() {
+        autoRelogin()
+    }
+
     private suspend fun autoRelogin() {
         try {
-            val encoded = Base64.encodeToString(storage.getPassword().toByteArray(), Base64.NO_WRAP)
-            RetrofitClient.setRouterAddress(storage.getRouterIp())
+            val ip = storage.getRouterIp()
+            val password = storage.getPassword()
+            val encoded = Base64.encodeToString(
+                password.toByteArray(Charsets.UTF_8),
+                Base64.NO_WRAP
+            )
+            RetrofitClient.setRouterAddress(ip)
             RetrofitClient.getApi().login(password = encoded)
         } catch (_: Exception) {}
     }
 
-    private suspend fun retryBlock(mac: String, list: List<String>): Result<String> {
-        return try {
-            val r = RetrofitClient.getApi().setMacFilter(macList = (list + mac.uppercase()).joinToString(";"))
-            if (r.isSuccessful) Result.success("تم الحظر") else Result.failure(Exception("فشل"))
-        } catch (e: Exception) { Result.failure(e) }
-    }
-
-    private suspend fun retryUnblock(mac: String, list: List<String>): Result<String> {
-        return try {
-            val nl = list.filter { it.uppercase() != mac.uppercase() }.joinToString(";")
-            val r = if (nl.isEmpty()) RetrofitClient.getApi().disableMacFilter() else RetrofitClient.getApi().setMacFilter(macList = nl)
-            if (r.isSuccessful) Result.success("تم إلغاء الحظر") else Result.failure(Exception("فشل"))
-        } catch (e: Exception) { Result.failure(e) }
-    }
-
     private fun parseBlockedMacs(json: String): List<String> {
         return try {
-            Regex("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}").findAll(json).map { it.value.uppercase() }.toList()
-        } catch (_: Exception) { emptyList() }
+            Regex("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}")
+                .findAll(json)
+                .map { it.value.uppercase() }
+                .toList()
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 }
