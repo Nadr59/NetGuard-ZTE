@@ -1,6 +1,5 @@
 package com.example.netguardzte.data.api
 
-import com.example.netguardzte.data.api.models.StationListResponse
 import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.*
@@ -15,11 +14,41 @@ interface ZteRouterApi {
         @Field("password") password: String
     ): Response<ResponseBody>
 
+    // ═══ جلب الأجهزة — نجرب عدة أوامر ═══
+
     @GET("goform/goform_get_cmd_process")
     suspend fun getStationList(
         @Query("cmd") cmd: String = "station_list",
         @Query("multimode") multimode: String = "0"
-    ): Response<StationListResponse>
+    ): Response<ResponseBody>
+
+    @GET("goform/goform_get_cmd_process")
+    suspend fun getDhcpList(
+        @Query("cmd") cmd: String = "dhcp_list"
+    ): Response<ResponseBody>
+
+    @GET("goform/goform_get_cmd_process")
+    suspend fun getClientList(
+        @Query("cmd") cmd: String = "client_list"
+    ): Response<ResponseBody>
+
+    @GET("goform/goform_get_cmd_process")
+    suspend fun getLanStationList(
+        @Query("cmd") cmd: String = "lan_station_list"
+    ): Response<ResponseBody>
+
+    @GET("goform/goform_get_cmd_process")
+    suspend fun getWifiClientList(
+        @Query("cmd") cmd: String = "wifi_client_list"
+    ): Response<ResponseBody>
+
+    @GET("goform/goform_get_cmd_process")
+    suspend fun getGenericCmd(
+        @Query("cmd") cmd: String,
+        @Query("multimode") multimode: String = "0"
+    ): Response<ResponseBody>
+
+    // ═══ MAC Filter ═══
 
     @FormUrlEncoded
     @POST("goform/goform_set_cmd_process")
@@ -43,6 +72,8 @@ interface ZteRouterApi {
     suspend fun getMacFilterList(
         @Query("cmd") cmd: String = "mac_filter_list"
     ): Response<ResponseBody>
+
+    // ═══ تسجيل الخروج ═══
 
     @FormUrlEncoded
     @POST("goform/goform_set_cmd_process")
