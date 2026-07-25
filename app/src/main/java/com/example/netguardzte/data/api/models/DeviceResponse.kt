@@ -1,16 +1,14 @@
 package com.example.netguardzte.data.api.models
 
-import com.google.gson.annotations.SerializedName
+import com.google.gson.JsonElement
 
 data class StationListResponse(
-    @SerializedName("station_list")
-    val stationList: List<StationInfo>? = null
+    val station_list: JsonElement? = null
 )
 
 data class StationInfo(
     val mac: String = "",
     val ip: String = "",
     val hostname: String = "",
-    @SerializedName("conn_type")
-    val connType: String = "WiFi"
+    val conn_type: String = "WiFi"
 )
