@@ -4,12 +4,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -17,6 +19,8 @@ import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -30,6 +34,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -44,19 +49,25 @@ fun DevicesScreen(
     isLoading: Boolean,
     error: String?,
     showBlockDialog: Device?,
+    showDebugInfo: Boolean,
+    debugInfo: String,
     onRefresh: () -> Unit,
     onBlock: (Device) -> Unit,
     onUnblock: (String) -> Unit,
     onBlockConfirmed: () -> Unit,
     onBlockCancelled: () -> Unit,
     onNavigateToBlocked: () -> Unit,
-    onNavigateToSettings: () -> Unit
+    onNavigateToSettings: () -> Unit,
+    onToggleDebug: () -> Unit
 ) {
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("الأجهزة المتصلة", fontWeight = FontWeight.Bold) },
                 actions = {
+                    IconButton(onClick = onToggleDebug) {
+                        Text("🔍", fontSize = 18.sp)
+                    }
                     IconButton(onClick = onNavigateToBlocked) {
                         Icon(Icons.Default.Block, "المحظورون")
                     }
@@ -91,7 +102,9 @@ fun DevicesScreen(
 
                 error != null -> {
                     Column(
-                        Modifier.fillMaxSize().padding(32.dp),
+                        Modifier
+                            .fillMaxSize()
+                            .padding(32.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
@@ -105,6 +118,32 @@ fun DevicesScreen(
                         Spacer(Modifier.height(16.dp))
                         Button(onClick = onRefresh) {
                             Text("إعادة المحاولة")
+                        }
+
+                        // ═══ عرض معلومات التشخيص عند الخطأ ═══
+                        if (debugInfo.isNotBlank()) {
+                            Spacer(Modifier.height(16.dp))
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                                )
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        "🔍 Debug Info",
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.titleSmall
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        text = debugInfo,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -122,6 +161,40 @@ fun DevicesScreen(
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "اسحب للأسفل للتحديث",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        // ═══ عرض معلومات التشaygı عند عدم وجود أجهزة ═══
+                        if (showDebugInfo && debugInfo.isNotBlank()) {
+                            Spacer(Modifier.height(16.dp))
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                                )
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        "🔍 Debug Info",
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.titleSmall
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        text = debugInfo,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -131,13 +204,29 @@ fun DevicesScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         item {
-                            Text(
-                                text = "${devices.size} جهاز متصل",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
-                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 4.dp, bottom = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${devices.size} جهاز متصل",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(Modifier.weight(1f))
+                                if (showDebugInfo) {
+                                    Text(
+                                        text = "CMD: $debugInfo",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontSize = 9.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
                         }
+
                         items(items = devices, key = { it.mac }) { device ->
                             DeviceCard(
                                 device = device,
@@ -145,6 +234,35 @@ fun DevicesScreen(
                                 onUnblock = { onUnblock(device.mac) }
                             )
                         }
+
+                        // ═══ بطاقة التشخيص في أسفل القائمة ═══
+                        if (showDebugInfo && debugInfo.isNotBlank()) {
+                            item {
+                                Spacer(Modifier.height(8.dp))
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                                    )
+                                ) {
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        Text(
+                                            "🔍 Debug Info",
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.titleSmall
+                                        )
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            text = debugInfo,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 10.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
                         item { Spacer(Modifier.height(80.dp)) }
                     }
                 }
