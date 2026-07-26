@@ -246,7 +246,7 @@ class RouterRepository(private val storage: SecureStorage) {
         }
     }
 
-    private fun tryGetDeviceNamesFromRouter(): Map<String, String> {
+    private suspend fun tryGetDeviceNamesFromRouter(): Map<String, String> {
         val names = mutableMapOf<String, String>()
         try {
             val api = RetrofitClient.getApi()
