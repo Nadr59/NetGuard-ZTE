@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Refresh
@@ -66,7 +68,10 @@ fun DevicesScreen(
                 title = { Text("الأجهزة المتصلة", fontWeight = FontWeight.Bold) },
                 actions = {
                     IconButton(onClick = onToggleDebug) {
-                        Text("🔍", fontSize = 18.sp)
+                        Text(
+                            text = if (showDebugInfo) "🔍" else "🔧",
+                            fontSize = 18.sp
+                        )
                     }
                     IconButton(onClick = onNavigateToBlocked) {
                         Icon(Icons.Default.Block, "المحظورون")
@@ -88,6 +93,7 @@ fun DevicesScreen(
                 .padding(padding)
         ) {
             when {
+                // ═══ حالة التحميل ═══
                 isLoading -> {
                     Column(
                         Modifier.fillMaxSize(),
@@ -100,60 +106,49 @@ fun DevicesScreen(
                     }
                 }
 
+                // ═══ حالة الخطأ — مع عرض كامل للتشخيص ═══
                 error != null -> {
                     Column(
                         Modifier
                             .fillMaxSize()
-                            .padding(32.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
+                            .verticalScroll(rememberScrollState())
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
+                        Spacer(Modifier.height(32.dp))
+
                         Text("⚠️", fontSize = 48.sp)
                         Spacer(Modifier.height(12.dp))
                         Text(
                             text = error,
                             textAlign = TextAlign.Center,
-                            color = MaterialTheme.colorScheme.error
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium
                         )
                         Spacer(Modifier.height(16.dp))
                         Button(onClick = onRefresh) {
                             Text("إعادة المحاولة")
                         }
 
-                        // ═══ عرض معلومات التشخيص عند الخطأ ═══
-                        if (debugInfo.isNotBlank()) {
+                        // ═══ معلومات التشخيص الكاملة ═══
+                        if (showDebugInfo && debugInfo.isNotBlank()) {
                             Spacer(Modifier.height(16.dp))
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                                )
-                            ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Text(
-                                        "🔍 Debug Info",
-                                        fontWeight = FontWeight.Bold,
-                                        style = MaterialTheme.typography.titleSmall
-                                    )
-                                    Spacer(Modifier.height(4.dp))
-                                    Text(
-                                        text = debugInfo,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 10.sp
-                                    )
-                                }
-                            }
+                            DebugCard(debugInfo)
                         }
                     }
                 }
 
+                // ═══ لا توجد أجهزة ═══
                 devices.isEmpty() -> {
                     Column(
-                        Modifier.fillMaxSize(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
+                        Spacer(Modifier.height(48.dp))
+
                         Text("📡", fontSize = 48.sp)
                         Spacer(Modifier.height(12.dp))
                         Text(
@@ -162,69 +157,31 @@ fun DevicesScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.height(8.dp))
-                        Text(
-                            "اسحب للأسفل للتحديث",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Button(onClick = onRefresh) {
+                            Text("تحديث")
+                        }
 
-                        // ═══ عرض معلومات التشaygı عند عدم وجود أجهزة ═══
+                        // ═══ معلومات التشخيص ═══
                         if (showDebugInfo && debugInfo.isNotBlank()) {
                             Spacer(Modifier.height(16.dp))
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                                )
-                            ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Text(
-                                        "🔍 Debug Info",
-                                        fontWeight = FontWeight.Bold,
-                                        style = MaterialTheme.typography.titleSmall
-                                    )
-                                    Spacer(Modifier.height(4.dp))
-                                    Text(
-                                        text = debugInfo,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 10.sp
-                                    )
-                                }
-                            }
+                            DebugCard(debugInfo)
                         }
                     }
                 }
 
+                // ═══ قائمة الأجهزة ═══
                 else -> {
                     LazyColumn(
                         contentPadding = PaddingValues(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         item {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(start = 4.dp, bottom = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "${devices.size} جهاز متصل",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Spacer(Modifier.weight(1f))
-                                if (showDebugInfo) {
-                                    Text(
-                                        text = "CMD: $debugInfo",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontSize = 9.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
+                            Text(
+                                text = "${devices.size} جهاز متصل",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
+                            )
                         }
 
                         items(items = devices, key = { it.mac }) { device ->
@@ -235,31 +192,11 @@ fun DevicesScreen(
                             )
                         }
 
-                        // ═══ بطاقة التشخيص في أسفل القائمة ═══
+                        // ═══ معلومات التشخيص في أسفل القائمة ═══
                         if (showDebugInfo && debugInfo.isNotBlank()) {
                             item {
                                 Spacer(Modifier.height(8.dp))
-                                Card(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                                    )
-                                ) {
-                                    Column(modifier = Modifier.padding(12.dp)) {
-                                        Text(
-                                            "🔍 Debug Info",
-                                            fontWeight = FontWeight.Bold,
-                                            style = MaterialTheme.typography.titleSmall
-                                        )
-                                        Spacer(Modifier.height(4.dp))
-                                        Text(
-                                            text = debugInfo,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 10.sp
-                                        )
-                                    }
-                                }
+                                DebugCard(debugInfo)
                             }
                         }
 
@@ -304,5 +241,38 @@ fun DevicesScreen(
                 }
             }
         )
+    }
+}
+
+// ═══ بطاقة التشخيص القابلة للتمرير ═══
+@Composable
+private fun DebugCard(debugInfo: String) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer
+        )
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                "🔍 Debug Info (اسحب لأسفل للقراءة)",
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleSmall
+            )
+            Spacer(Modifier.height(8.dp))
+
+            // ═══ نص قابل للتمرير ═══
+            Text(
+                text = debugInfo,
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 10.sp,
+                lineHeight = 14.sp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(300.dp)
+                    .verticalScroll(rememberScrollState())
+            )
+        }
     }
 }
