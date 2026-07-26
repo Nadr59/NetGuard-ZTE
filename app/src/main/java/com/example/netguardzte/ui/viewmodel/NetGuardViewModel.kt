@@ -26,7 +26,8 @@ data class NetGuardUiState(
     val showBlockDialog: Device? = null,
     val showUnblockDialog: String? = null,
     val showDebugInfo: Boolean = false,
-    val debugInfo: String = ""
+    val debugInfo: String = "",
+    val isTestingRouter: Boolean = false
 )
 
 class NetGuardViewModel(application: Application) : AndroidViewModel(application) {
@@ -66,46 +67,44 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun login() {
-         val s = _uiState.value
-         if (s.password.isBlank()) {
-        _uiState.value = s.copy(loginError = "أدخل كلمة المرور")
-        return
+        val s = _uiState.value
+        if (s.password.isBlank()) {
+            _uiState.value = s.copy(loginError = "أدخل كلمة المرور")
+            return
         }
-      _uiState.value = s.copy(isLoggingIn = true, loginError = null)
+        _uiState.value = s.copy(isLoggingIn = true, loginError = null)
 
-    viewModelScope.launch {
-        val result = repository.login(s.routerIp, s.username, s.password)
-        result.fold(
-            onSuccess = {
-                _uiState.value = _uiState.value.copy(
-                    isLoggingIn = false,
-                    currentScreen = "devices",
-                    password = "",
-                    debugInfo = buildString {
-                        append("=== LOGIN DEBUG ===\n")
-                        append(repository.loginDebug)
-                        append("\n\n")
-                        append(repository.cookieDebug)
-                    }
-                )
-                loadDevices()
-            },
-            onFailure = { error ->
-                _uiState.value = _uiState.value.copy(
-                    isLoggingIn = false,
-                    loginError = error.message,
-                    debugInfo = buildString {
-                        append("=== LOGIN FAILED ===\n")
-                        append(repository.loginDebug)
-                        append("\n\n")
-                        append(repository.cookieDebug)
-                    }
-                )
-            }
-        )
+        viewModelScope.launch {
+            val result = repository.login(s.routerIp, s.username, s.password)
+            result.fold(
+                onSuccess = {
+                    _uiState.value = _uiState.value.copy(
+                        isLoggingIn = false,
+                        currentScreen = "devices",
+                        debugInfo = buildString {
+                            append("=== LOGIN DEBUG ===\n")
+                            append(repository.loginDebug)
+                            append("\n\n")
+                            append(repository.cookieDebug)
+                        }
+                    )
+                    loadDevices()
+                },
+                onFailure = { error ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoggingIn = false,
+                        loginError = error.message,
+                        debugInfo = buildString {
+                            append("=== LOGIN FAILED ===\n")
+                            append(repository.loginDebug)
+                            append("\n\n")
+                            append(repository.cookieDebug)
+                        }
+                    )
+                }
+            )
+        }
     }
-}
-    
 
     fun loadDevices() {
         _uiState.value = _uiState.value.copy(isLoadingDevices = true, deviceError = null)
@@ -131,17 +130,36 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
                 blockedMacs = blocked,
                 deviceError = devicesResult.exceptionOrNull()?.message,
                 debugInfo = buildString {
-                    append("=== FULL DEBUG ===\n\n")
-                    append(repository.cookieDebug)
-                    append("\n\n")
-                    append(repository.loginDebug)
-                    append("\n\n")
+                    append("${repository.cookieDebug}\n\n")
+                    append("${repository.loginDebug}\n\n")
                     append("=== DEVICE SCAN ===\n")
                     append(repository.allCommandsDebug)
-                    append("\n\n")
-                    append("=== LAST RESPONSE ===\n")
-                    append("Command: ${repository.lastWorkingCommand}\n\n")
-                    append(repository.lastRawResponse.take(1000))
+                    append("\n\nLast: ${repository.lastWorkingCommand}")
+                    append("\n${repository.lastRawResponse.take(500)}")
+                }
+            )
+        }
+    }
+
+    fun testRouter() {
+        _uiState.value = _uiState.value.copy(isTestingRouter = true)
+
+        viewModelScope.launch {
+            val result = repository.testRouterConnection()
+            result.fold(
+                onSuccess = { testResult ->
+                    _uiState.value = _uiState.value.copy(
+                        isTestingRouter = false,
+                        showDebugInfo = true,
+                        debugInfo = testResult
+                    )
+                },
+                onFailure = { error ->
+                    _uiState.value = _uiState.value.copy(
+                        isTestingRouter = false,
+                        showDebugInfo = true,
+                        debugInfo = "Test failed: ${error.message}"
+                    )
                 }
             )
         }
@@ -162,7 +180,7 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
                     loadDevices()
                 },
                 onFailure = {
-                    _uiState.value = _uiState.value.copy(message = "فشل: ${it.message}")
+                    _uiState.value = _uiState.value.copy(message = "فشل الحظر: ${it.message}")
                 }
             )
         }
@@ -187,7 +205,7 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
                     loadDevices()
                 },
                 onFailure = {
-                    _uiState.value = _uiState.value.copy(message = "فشل: ${it.message}")
+                    _uiState.value = _uiState.value.copy(message = "فشل إلغاء الحظر: ${it.message}")
                 }
             )
         }
