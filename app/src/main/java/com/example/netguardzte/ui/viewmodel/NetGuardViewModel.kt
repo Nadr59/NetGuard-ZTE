@@ -66,48 +66,46 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun login() {
-        val s = _uiState.value
-
-        if (s.password.isBlank()) {
-            _uiState.value = s.copy(loginError = "أدخل كلمة المرور")
-            return
+         val s = _uiState.value
+         if (s.password.isBlank()) {
+        _uiState.value = s.copy(loginError = "أدخل كلمة المرور")
+        return
         }
+      _uiState.value = s.copy(isLoggingIn = true, loginError = null)
 
-        _uiState.value = s.copy(isLoggingIn = true, loginError = null)
-
-        viewModelScope.launch {
-            val result = repository.login(s.routerIp, s.username, s.password)
-
-            result.fold(
-                onSuccess = {
-                    _uiState.value = _uiState.value.copy(
-                        isLoggingIn = false,
-                        currentScreen = "devices",
-                        password = "",
-                        debugInfo = buildString {
-                            append("=== LOGIN DEBUG ===\n")
-                            append(repository.loginDebug)
-                            append("\n\n")
-                            append(repository.cookieDebug)
-                        }
-                    )
-                    loadDevices()
-                },
-                onFailure = { error ->
-                    _uiState.value = _uiState.value.copy(
-                        isLoggingIn = false,
-                        loginError = error.message,
-                        debugInfo = buildString {
-                            append("=== LOGIN FAILED ===\n")
-                            append(repository.loginDebug)
-                            append("\n\n")
-                            append(repository.cookieDebug)
-                        }
-                    )
-                }
-            )
-        }
+    viewModelScope.launch {
+        val result = repository.login(s.routerIp, s.username, s.password)
+        result.fold(
+            onSuccess = {
+                _uiState.value = _uiState.value.copy(
+                    isLoggingIn = false,
+                    currentScreen = "devices",
+                    password = "",
+                    debugInfo = buildString {
+                        append("=== LOGIN DEBUG ===\n")
+                        append(repository.loginDebug)
+                        append("\n\n")
+                        append(repository.cookieDebug)
+                    }
+                )
+                loadDevices()
+            },
+            onFailure = { error ->
+                _uiState.value = _uiState.value.copy(
+                    isLoggingIn = false,
+                    loginError = error.message,
+                    debugInfo = buildString {
+                        append("=== LOGIN FAILED ===\n")
+                        append(repository.loginDebug)
+                        append("\n\n")
+                        append(repository.cookieDebug)
+                    }
+                )
+            }
+        )
     }
+}
+    
 
     fun loadDevices() {
         _uiState.value = _uiState.value.copy(isLoadingDevices = true, deviceError = null)
