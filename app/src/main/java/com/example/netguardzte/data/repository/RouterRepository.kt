@@ -6,10 +6,10 @@ import com.example.netguardzte.data.local.SecureStorage
 import com.example.netguardzte.domain.model.Device
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import retrofit2.Response
 import java.io.BufferedReader
 import java.io.FileReader
-import java.net.InetAddress
 
 class RouterRepository(private val storage: SecureStorage) {
 
@@ -39,17 +39,11 @@ class RouterRepository(private val storage: SecureStorage) {
                 password.toByteArray(Charsets.UTF_8), Base64.NO_WRAP
             )
 
-            // ═══ جرب تسجيل الدخول 3 مرات ═══
             for (attempt in 1..3) {
                 debug.appendLine("=== Login attempt $attempt ===")
-
                 try {
-                    // اطلب الصفحة الرئيسية أولاً
                     if (attempt == 1) {
-                        try {
-                            api.getMainPage()
-                            api.getIndexPage()
-                        } catch (_: Exception) {}
+                        try { api.getMainPage() } catch (_: Exception) {}
                     }
 
                     val response = api.login(password = encodedPassword)
@@ -59,7 +53,6 @@ class RouterRepository(private val storage: SecureStorage) {
                     debug.appendLine("Body: ${body.take(200)}")
                     readCookies(response, debug)
 
-                    // result:3 = كلمة مرور خاطئة فعلاً
                     if (body.contains("\"result\":\"3\"") || body.contains("\"result\":3")) {
                         if (attempt == 3) {
                             loginDebug = debug.toString()
@@ -68,18 +61,16 @@ class RouterRepository(private val storage: SecureStorage) {
                         continue
                     }
 
-                    // result:0 أو result:1 = نجاح
                     if (body.contains("\"result\":\"0\"") || body.contains("\"result\":0") ||
                         body.contains("\"result\":\"1\"") || body.contains("\"result\":1")
                     ) {
-                        debug.appendLine("LOGIN SUCCESS on attempt $attempt!")
+                        debug.appendLine("SUCCESS on attempt $attempt!")
                         storage.saveCredentials(routerIp, username, password)
                         storage.setLoggedIn(true)
                         loginDebug = debug.toString()
                         return@withContext Result.success("تم الاتصال بالراوتر")
                     }
 
-                    // HTTP نجاح بدون result واضح
                     if (response.isSuccessful) {
                         storage.saveCredentials(routerIp, username, password)
                         storage.setLoggedIn(true)
@@ -88,11 +79,7 @@ class RouterRepository(private val storage: SecureStorage) {
                     }
 
                 } catch (e: Exception) {
-                    debug.appendLine("Attempt $attempt error: ${e.message}")
-                    if (attempt == 3) {
-                        loginDebug = debug.toString()
-                        return@withContext Result.failure(Exception("لا يمكن الوصول للراوتر: ${e.message}"))
-                    }
+                    debug.appendLine("Error: ${e.message}")
                 }
             }
 
@@ -105,40 +92,23 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     suspend fun getConnectedDevices(): Result<List<Device>> = withContext(Dispatchers.IO) {
+        val debug = StringBuilder()
+        debug.appendLine("=== DEVICE SCAN ===")
+
         try {
-            val debug = StringBuilder()
-            val routerIp = storage.getRouterIp()
-
-            debug.appendLine("=== DEVICE SCAN ===")
-
-            // ═══ الطريقة 1: ARP table (سريعة جداً) ═══
+            // ═══ الطريقة 1: ARP table (الأسرع) ═══
             debug.appendLine("\n--- ARP Table ---")
-            val arpDevices = readArpTable()
-            debug.appendLine("Found: ${arpDevices.size} devices")
-            for (d in arpDevices) {
-                debug.appendLine("  ${d.ip} | ${d.mac} | ${d.hostname}")
-            }
+            val arpDevices = readArpTableSafe()
+            debug.appendLine("Found: ${arpDevices.size}")
 
             if (arpDevices.isNotEmpty()) {
-                lastRawResponse = "ARP: ${arpDevices.size} devices"
+                for (d in arpDevices) debug.appendLine("  ${d.ip} | ${d.mac}")
                 lastWorkingCommand = "ARP table"
                 allCommandsDebug = debug.toString()
                 return@withContext Result.success(arpDevices)
             }
 
-            // ═══ الطريقة 2: Ping سريع (أول 30 IP فقط) ═══
-            debug.appendLine("\n--- Quick Ping ---")
-            val scanned = quickScan(routerIp, debug)
-            debug.appendLine("Found: ${scanned.size} devices")
-
-            if (scanned.isNotEmpty()) {
-                lastRawResponse = "Scan: ${scanned.size} devices"
-                lastWorkingCommand = "Quick ping"
-                allCommandsDebug = debug.toString()
-                return@withContext Result.success(scanned)
-            }
-
-            // ═══ الطريقة 3: Router API ═══
+            // ═══ الطريقة 2: Router API ═══
             debug.appendLine("\n--- Router API ---")
             try {
                 val api = RetrofitClient.getApi()
@@ -150,20 +120,39 @@ class RouterRepository(private val storage: SecureStorage) {
                         if (b.length > 30 && !b.contains("\"\":\"$cmd\"")) {
                             val devices = parseDevices(b)
                             if (devices.isNotEmpty()) {
+                                lastWorkingCommand = cmd
                                 allCommandsDebug = debug.toString()
                                 return@withContext Result.success(devices)
                             }
                         }
-                    } catch (_: Exception) {}
+                    } catch (e: Exception) {
+                        debug.appendLine("[$cmd] error: ${e.message}")
+                    }
                 }
             } catch (e: Exception) {
                 debug.appendLine("API error: ${e.message}")
             }
 
+            // ═══ الطريقة 3: Ping سريع ═══
+            debug.appendLine("\n--- Quick Ping ---")
+            try {
+                val pingDevices = quickScanSafe()
+                debug.appendLine("Found: ${pingDevices.size}")
+
+                if (pingDevices.isNotEmpty()) {
+                    lastWorkingCommand = "Ping scan"
+                    allCommandsDebug = debug.toString()
+                    return@withContext Result.success(pingDevices)
+                }
+            } catch (e: Exception) {
+                debug.appendLine("Ping error: ${e.message}")
+            }
+
             allCommandsDebug = debug.toString()
             Result.failure(Exception("لم يتم العثور على أجهزة"))
         } catch (e: Exception) {
-            Result.failure(Exception("فشل: ${e.message}"))
+            allCommandsDebug = debug.toString()
+            Result.failure(Exception("فشل البحث: ${e.message}"))
         }
     }
 
@@ -172,7 +161,7 @@ class RouterRepository(private val storage: SecureStorage) {
             val api = RetrofitClient.getApi()
             val debug = StringBuilder()
 
-            debug.appendLine("=== TEST ROUTER API ===")
+            debug.appendLine("=== TEST ROUTER ===")
 
             debug.appendLine("\n--- Session ---")
             try {
@@ -192,26 +181,13 @@ class RouterRepository(private val storage: SecureStorage) {
                 debug.appendLine("Error: ${e.message}")
             }
 
-            debug.appendLine("\n--- Commands ---")
-            val testCmds = listOf(
-                "wifi_onoff", "SSID1", "mac_filter_enabled",
-                "mac_filter_mode", "mac_filter_list", "imei"
-            )
-            for (cmd in testCmds) {
-                try {
-                    val r = api.getGenericCmd(cmd = cmd)
-                    val b = r.body()?.string() ?: ""
-                    debug.appendLine("  [$cmd] -> ${b.take(100)}")
-                } catch (e: Exception) {
-                    debug.appendLine("  [$cmd] -> Error: ${e.message}")
-                }
-            }
-
-            debug.appendLine("\n--- ARP Table ---")
-            val arp = readArpTable()
-            debug.appendLine("Devices: ${arp.size}")
-            for (d in arp) {
-                debug.appendLine("  ${d.ip} | ${d.mac}")
+            debug.appendLine("\n--- ARP ---")
+            try {
+                val arp = readArpTableSafe()
+                debug.appendLine("Devices: ${arp.size}")
+                for (d in arp) debug.appendLine("  ${d.ip} | ${d.mac}")
+            } catch (e: Exception) {
+                debug.appendLine("Error: ${e.message}")
             }
 
             Result.success(debug.toString())
@@ -221,91 +197,108 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     // ═══════════════════════════════════════════
-    // ARP table — سريع جداً (لا يوجد DNS)
+    // ARP table — آمن بالكامل
     // ═══════════════════════════════════════════
-    private fun readArpTable(): List<Device> {
+    private fun readArpTableSafe(): List<Device> {
         val devices = mutableListOf<Device>()
         try {
             val reader = BufferedReader(FileReader("/proc/net/arp"))
-            reader.readLine()
-            var line = reader.readLine()
-            while (line != null) {
-                val parts = line.trim().split(Regex("\\s+"))
-                if (parts.size >= 6) {
-                    val ip = parts[0]
-                    val mac = parts[3].uppercase()
-                    val flags = parts[2]
-                    if (mac != "00:00:00:00:00:00" && flags != "0x0") {
-                        val routerIp = storage.getRouterIp()
-                        devices.add(
-                            Device(
-                                mac = mac,
-                                ip = ip,
-                                hostname = guessDeviceName(ip, mac),
-                                connectionType = if (ip == routerIp) "Router" else "WiFi"
-                            )
-                        )
-                    }
+            try {
+                reader.readLine() // skip header
+                var line = reader.readLine()
+                while (line != null) {
+                    try {
+                        val parts = line.trim().split(Regex("\\s+"))
+                        if (parts.size >= 4) {
+                            val ip = parts[0]
+                            val mac = parts[3].uppercase()
+                            val flags = parts.getOrElse(2) { "0x0" }
+
+                            if (mac != "00:00:00:00:00:00" && flags != "0x0") {
+                                val routerIp = storage.getRouterIp()
+                                devices.add(
+                                    Device(
+                                        mac = mac,
+                                        ip = ip,
+                                        hostname = guessName(ip, mac),
+                                        connectionType = if (ip == routerIp) "Router" else "WiFi"
+                                    )
+                                )
+                            }
+                        }
+                    } catch (_: Exception) {}
+                    line = reader.readLine()
                 }
-                line = reader.readLine()
+            } finally {
+                reader.close()
             }
-            reader.close()
         } catch (_: Exception) {}
         return devices
     }
 
-    // ═══ مسح سريع — أول 30 IP فقط ═══
-    private fun quickScan(routerIp: String, debug: StringBuilder): List<Device> {
+    // ═══ Ping سريع وآمن — بدون DNS ═══
+    private fun quickScanSafe(): List<Device> {
         val devices = mutableListOf<Device>()
         try {
+            val routerIp = storage.getRouterIp()
             val subnet = routerIp.substringBeforeLast(".")
-            for (i in 1..30) {
-                val ip = "$subnet.$i"
+
+            for (i in 1..10) {
                 try {
-                    val addr = InetAddress.getByName(ip)
-                    if (addr.isReachable(50) || ip == routerIp) {
+                    val ip = "$subnet.$i"
+                    val addr = java.net.InetAddress.getByName(ip)
+                    val reachable = try {
+                        addr.isReachable(50)
+                    } catch (_: Exception) { false }
+
+                    if (reachable) {
                         val mac = getMacFromArp(ip)
                         devices.add(
                             Device(
                                 mac = mac.ifBlank { "??:??:??:??:??:??" },
                                 ip = ip,
-                                hostname = guessDeviceName(ip, mac),
+                                hostname = guessName(ip, mac),
                                 connectionType = if (ip == routerIp) "Router" else "WiFi"
                             )
                         )
                     }
                 } catch (_: Exception) {}
             }
-            // اقرأ ARP بعد الـ ping
-            for (arp in readArpTable()) {
-                if (devices.none { it.ip == arp.ip }) devices.add(arp)
+
+            // أضف من ARP table
+            for (arp in readArpTableSafe()) {
+                if (devices.none { it.ip == arp.ip }) {
+                    devices.add(arp)
+                }
             }
-        } catch (e: Exception) {
-            debug.appendLine("Scan error: ${e.message}")
-        }
+        } catch (_: Exception) {}
         return devices
     }
 
     private fun getMacFromArp(ip: String): String {
         try {
             val reader = BufferedReader(FileReader("/proc/net/arp"))
-            reader.readLine()
-            var line = reader.readLine()
-            while (line != null) {
-                val parts = line.trim().split(Regex("\\s+"))
-                if (parts.size >= 6 && parts[0] == ip) {
-                    val mac = parts[3].uppercase()
-                    reader.close()
-                    if (mac != "00:00:00:00:00:00") return mac
+            try {
+                reader.readLine()
+                var line = reader.readLine()
+                while (line != null) {
+                    try {
+                        val parts = line.trim().split(Regex("\\s+"))
+                        if (parts.size >= 4 && parts[0] == ip) {
+                            val mac = parts[3].uppercase()
+                            if (mac != "00:00:00:00:00:00") return mac
+                        }
+                    } catch (_: Exception) {}
+                    line = reader.readLine()
                 }
-                line = reader.readLine()
+            } finally {
+                reader.close()
             }
-            reader.close()
         } catch (_: Exception) {}
         return ""
     }
 
-    private fun guessDeviceName(ip: String, mac: String): String {
+    private fun guessName(ip: String, mac: String): String {
         val vendor = when {
             mac.startsWith("A4:83") || mac.startsWith("F0:18") || mac.startsWith("3C:2E") -> "Apple"
             mac.startsWith("CC:96") || mac.startsWith("58:48") || mac.startsWith("AC:CF") -> "Huawei"
@@ -317,7 +310,6 @@ class RouterRepository(private val storage: SecureStorage) {
             mac.startsWith("F0:27") || mac.startsWith("74:C2") -> "Amazon"
             mac.startsWith("B8:27") || mac.startsWith("DC:A6") -> "Raspberry Pi"
             mac.startsWith("00:21") -> "ZTE"
-            mac.startsWith("00:E0:4C") -> "Realtek"
             else -> ""
         }
         val suffix = ip.substringAfterLast(".")
@@ -332,37 +324,29 @@ class RouterRepository(private val storage: SecureStorage) {
         withContext(Dispatchers.IO) {
             try {
                 val newList = (currentBlockedList + mac.uppercase()).joinToString(";")
-                val response = RetrofitClient.getApi().setMacFilter(macList = newList)
-                if (response.isSuccessful) Result.success("تم حظر الجهاز")
-                else Result.failure(Exception("فشل: ${response.code()}"))
+                val r = RetrofitClient.getApi().setMacFilter(macList = newList)
+                if (r.isSuccessful) Result.success("تم حظر الجهاز")
+                else Result.failure(Exception("فشل: ${r.code()}"))
             } catch (e: Exception) { Result.failure(e) }
         }
 
     suspend fun unblockDevice(mac: String, currentBlockedList: List<String>): Result<String> =
         withContext(Dispatchers.IO) {
             try {
-                val newList = currentBlockedList
-                    .filter { it.uppercase() != mac.uppercase() }
-                    .joinToString(";")
-                val response = if (newList.isEmpty()) {
-                    RetrofitClient.getApi().disableMacFilter()
-                } else {
-                    RetrofitClient.getApi().setMacFilter(macList = newList)
-                }
-                if (response.isSuccessful) Result.success("تم إلغاء الحظر")
-                else Result.failure(Exception("فشل: ${response.code()}"))
+                val newList = currentBlockedList.filter { it.uppercase() != mac.uppercase() }.joinToString(";")
+                val r = if (newList.isEmpty()) RetrofitClient.getApi().disableMacFilter()
+                else RetrofitClient.getApi().setMacFilter(macList = newList)
+                if (r.isSuccessful) Result.success("تم إلغاء الحظر")
+                else Result.failure(Exception("فشل: ${r.code()}"))
             } catch (e: Exception) { Result.failure(e) }
         }
 
     suspend fun getBlockedMacs(): Result<List<String>> = withContext(Dispatchers.IO) {
         try {
-            val response = RetrofitClient.getApi().getMacFilterList()
-            if (response.isSuccessful) {
-                val body = response.body()?.string() ?: ""
-                Result.success(
-                    Regex("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}")
-                        .findAll(body).map { it.value.uppercase() }.toList()
-                )
+            val r = RetrofitClient.getApi().getMacFilterList()
+            if (r.isSuccessful) {
+                val body = r.body()?.string() ?: ""
+                Result.success(Regex("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}").findAll(body).map { it.value.uppercase() }.toList())
             } else Result.success(emptyList())
         } catch (_: Exception) { Result.success(emptyList()) }
     }
@@ -371,16 +355,6 @@ class RouterRepository(private val storage: SecureStorage) {
         try { RetrofitClient.getApi().logout() } catch (_: Exception) {}
         storage.setLoggedIn(false)
         RetrofitClient.reset()
-    }
-
-    private suspend fun autoRelogin() {
-        try {
-            val encoded = Base64.encodeToString(
-                storage.getPassword().toByteArray(Charsets.UTF_8), Base64.NO_WRAP
-            )
-            RetrofitClient.setRouterAddress(storage.getRouterIp())
-            RetrofitClient.getApi().login(password = encoded)
-        } catch (_: Exception) {}
     }
 
     private fun readCookies(response: Response<*>, debug: StringBuilder) {
