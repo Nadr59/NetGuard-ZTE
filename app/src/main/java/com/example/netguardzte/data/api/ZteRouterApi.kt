@@ -81,4 +81,10 @@ interface ZteRouterApi {
         @Field("isTest") isTest: String = "false",
         @Field("goformId") goformId: String = "LOGOUT"
     ): Response<ResponseBody>
+    @FormUrlEncoded
+    @POST("goform/goform_set_cmd_process")
+    suspend fun postGoformId(
+       @Field("isTest") isTest: String = "false",
+       @Field("goformId") goformId: String
+     ): Response<ResponseBody>
 }
