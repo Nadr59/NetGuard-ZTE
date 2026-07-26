@@ -54,24 +54,15 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun onRouterIpChanged(ip: String) {
-        _uiState.value = _uiState.value.copy(
-            routerIp = ip,
-            loginError = null
-        )
+        _uiState.value = _uiState.value.copy(routerIp = ip, loginError = null)
     }
 
     fun onUsernameChanged(u: String) {
-        _uiState.value = _uiState.value.copy(
-            username = u,
-            loginError = null
-        )
+        _uiState.value = _uiState.value.copy(username = u, loginError = null)
     }
 
     fun onPasswordChanged(p: String) {
-        _uiState.value = _uiState.value.copy(
-            password = p,
-            loginError = null
-        )
+        _uiState.value = _uiState.value.copy(password = p, loginError = null)
     }
 
     fun login() {
@@ -94,9 +85,10 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
                         currentScreen = "devices",
                         password = "",
                         debugInfo = buildString {
-                            append("LOGIN OK\n")
-                            append("${repository.loginResponse}\n\n")
-                            append("${repository.cookieDebug}")
+                            append("=== LOGIN DEBUG ===\n")
+                            append(repository.loginDebug)
+                            append("\n\n")
+                            append(repository.cookieDebug)
                         }
                     )
                     loadDevices()
@@ -106,9 +98,10 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
                         isLoggingIn = false,
                         loginError = error.message,
                         debugInfo = buildString {
-                            append("LOGIN FAIL\n")
-                            append("${repository.loginResponse}\n\n")
-                            append("${repository.cookieDebug}")
+                            append("=== LOGIN FAILED ===\n")
+                            append(repository.loginDebug)
+                            append("\n\n")
+                            append(repository.cookieDebug)
                         }
                     )
                 }
@@ -117,10 +110,7 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun loadDevices() {
-        _uiState.value = _uiState.value.copy(
-            isLoadingDevices = true,
-            deviceError = null
-        )
+        _uiState.value = _uiState.value.copy(isLoadingDevices = true, deviceError = null)
 
         viewModelScope.launch {
             val devicesResult = repository.getConnectedDevices()
@@ -143,10 +133,17 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
                 blockedMacs = blocked,
                 deviceError = devicesResult.exceptionOrNull()?.message,
                 debugInfo = buildString {
-                    append("${repository.cookieDebug}\n\n")
-                    append("${repository.loginResponse}\n\n")
+                    append("=== FULL DEBUG ===\n\n")
+                    append(repository.cookieDebug)
+                    append("\n\n")
+                    append(repository.loginDebug)
+                    append("\n\n")
+                    append("=== DEVICE SCAN ===\n")
+                    append(repository.allCommandsDebug)
+                    append("\n\n")
+                    append("=== LAST RESPONSE ===\n")
                     append("Command: ${repository.lastWorkingCommand}\n\n")
-                    append("Response:\n${repository.lastRawResponse.take(500)}")
+                    append(repository.lastRawResponse.take(1000))
                 }
             )
         }
@@ -161,20 +158,13 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
         _uiState.value = _uiState.value.copy(showBlockDialog = null)
 
         viewModelScope.launch {
-            val result = repository.blockDevice(
-                device.mac,
-                _uiState.value.blockedMacs
-            )
-
-            result.fold(
-                onSuccess = { msg ->
-                    _uiState.value = _uiState.value.copy(message = msg)
+            repository.blockDevice(device.mac, _uiState.value.blockedMacs).fold(
+                onSuccess = {
+                    _uiState.value = _uiState.value.copy(message = it)
                     loadDevices()
                 },
-                onFailure = { error ->
-                    _uiState.value = _uiState.value.copy(
-                        message = "فشل الحظر: ${error.message}"
-                    )
+                onFailure = {
+                    _uiState.value = _uiState.value.copy(message = "فشل: ${it.message}")
                 }
             )
         }
@@ -193,20 +183,13 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
         _uiState.value = _uiState.value.copy(showUnblockDialog = null)
 
         viewModelScope.launch {
-            val result = repository.unblockDevice(
-                mac,
-                _uiState.value.blockedMacs
-            )
-
-            result.fold(
-                onSuccess = { msg ->
-                    _uiState.value = _uiState.value.copy(message = msg)
+            repository.unblockDevice(mac, _uiState.value.blockedMacs).fold(
+                onSuccess = {
+                    _uiState.value = _uiState.value.copy(message = it)
                     loadDevices()
                 },
-                onFailure = { error ->
-                    _uiState.value = _uiState.value.copy(
-                        message = "فشل إلغاء الحظر: ${error.message}"
-                    )
+                onFailure = {
+                    _uiState.value = _uiState.value.copy(message = "فشل: ${it.message}")
                 }
             )
         }
@@ -227,9 +210,7 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun logout() {
-        viewModelScope.launch {
-            repository.logout()
-        }
+        viewModelScope.launch { repository.logout() }
         _uiState.value = NetGuardUiState(
             routerIp = storage.getRouterIp(),
             username = storage.getUsername()
