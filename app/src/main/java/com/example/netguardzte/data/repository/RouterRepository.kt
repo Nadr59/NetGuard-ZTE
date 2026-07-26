@@ -85,47 +85,24 @@ class RouterRepository(private val storage: SecureStorage) {
                 val subnet = routerIp.substringBeforeLast(".")
 
                 debug.appendLine("=== DEVICE SCAN ===")
-                debug.appendLine("Router: $routerIp")
 
-                // ═══ الطريقة 1: اقرأ ARP من ملف ═══
-                debug.appendLine("\n--- Method 1: /proc/net/arp ---")
-                var devices = readArpFromFile()
+                // ═══ الخطوة 1: مسح ARP cache ═══
+                debug.appendLine("\n--- Flush ARP ---")
+                flushArpCache(debug)
+
+                // ═══ الخطوة 2: TCP connect لإجبار ARP جديد ═══
+                debug.appendLine("\n--- Force ARP via TCP ---")
+                forceArpEntries(subnet, debug)
+
+                // ═══ الخطوة 3: اقرأ ARP ═══
+                debug.appendLine("\n--- Read ARP ---")
+                var devices = readArpFromAllSources(debug)
                 debug.appendLine("Found: ${devices.size}")
 
-                // ═══ الطريقة 2: أمر ip neigh ═══
+                // ═══ الخطوة 4: Router API ═══
                 if (devices.isEmpty()) {
-                    debug.appendLine("\n--- Method 2: ip neigh ---")
-                    devices = readArpFromCommand("ip neigh")
-                    debug.appendLine("Found: ${devices.size}")
-                }
-
-                // ═══ الطريقة 3: أمر arp ═══
-                if (devices.isEmpty()) {
-                    debug.appendLine("\n--- Method 3: arp -a ---")
-                    devices = readArpFromCommand("arp -a")
-                    debug.appendLine("Found: ${devices.size}")
-                }
-
-                // ═══ الطريقة 4: ndc (Android netd) ═══
-                if (devices.isEmpty()) {
-                    debug.appendLine("\n--- Method 4: ndc ---")
-                    devices = readArpFromCommand("ndc ip neigh")
-                    debug.appendLine("Found: ${devices.size}")
-                }
-
-                // ═══ الطريقة 5: افتح اتصال TCP لإجبار ARP ═══
-                if (devices.isEmpty()) {
-                    debug.appendLine("\n--- Method 5: TCP connect to force ARP ---")
-                    forceArpEntries(subnet, debug)
-                    devices = readArpFromFile()
-                    debug.appendLine("After TCP: ${devices.size}")
-                }
-
-                // ═══ الطريقة 6: shell cat ═══
-                if (devices.isEmpty()) {
-                    debug.appendLine("\n--- Method 6: shell cat /proc/net/arp ---")
-                    devices = readArpFromCommand("cat /proc/net/arp")
-                    debug.appendLine("Found: ${devices.size}")
+                    debug.appendLine("\n--- Router API ---")
+                    devices = readFromRouterApi(debug)
                 }
 
                 for (d in devices) {
@@ -139,52 +116,139 @@ class RouterRepository(private val storage: SecureStorage) {
                     return@withContext Result.success(devices)
                 }
 
-                // ═══ الطريقة 7: Router API ═══
-                debug.appendLine("\n--- Method 7: Router API ---")
-                try {
-                    val api = RetrofitClient.getApi()
-                    val cmds = listOf(
-                        "station_list", "wifi_station_list", "dhcp_list",
-                        "client_list", "connected_devices", "lan_station_list",
-                        "wifiAttachCount", "wifiAttachList"
-                    )
-                    for (cmd in cmds) {
-                        try {
-                            val r = api.getGenericCmd(cmd = cmd)
-                            val b = r.body()?.string() ?: ""
-                            debug.appendLine("[$cmd] -> ${b.take(100)}")
-                            if (b.length > 30 && !b.contains("\"\":\"$cmd\"")) {
-                                val parsed = parseDevices(b)
-                                if (parsed.isNotEmpty()) {
-                                    allCommandsDebug = debug.toString()
-                                    return@withContext Result.success(parsed)
-                                }
-                            }
-                        } catch (e: Exception) {
-                            debug.appendLine("[$cmd] error: ${e.message}")
-                        }
-                    }
-                } catch (e: Exception) {
-                    debug.appendLine("API error: ${e.message}")
-                }
-
                 allCommandsDebug = debug.toString()
-                Result.failure(Exception("لم يتم العثور على أجهزة\n\n$allCommandsDebug"))
+                Result.failure(Exception("لم يتم العثور على أجهزة"))
             }
         } catch (e: Exception) {
             Result.failure(Exception("فشل: ${e.message}"))
         }
     }
 
-    // ═══ قراءة ARP من ملف ═══
+    // ═══ مسح ARP cache ═══
+    private fun flushArpCache(debug: StringBuilder) {
+        try {
+            val routerIp = storage.getRouterIp()
+            val subnet = routerIp.substringBeforeLast(".")
+
+            // محاولة مسح ARP عبر shell
+            val commands = listOf(
+                "ip neigh flush dev wlan0",
+                "ip -s neigh flush dev wlan0",
+                "ndc ip neigh flush dev wlan0"
+            )
+            for (cmd in commands) {
+                try {
+                    val p = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
+                    p.waitFor()
+                    debug.appendLine("  $cmd -> done")
+                } catch (e: Exception) {
+                    debug.appendLine("  $cmd -> ${e.message}")
+                }
+            }
+        } catch (e: Exception) {
+            debug.appendLine("Flush error: ${e.message}")
+        }
+    }
+
+    // ═══ TCP connect لإجبار ARP ═══
+    private fun forceArpEntries(subnet: String, debug: StringBuilder) {
+        try {
+            for (i in 1..50) {
+                val ip = "$subnet.$i"
+                for (port in listOf(80, 443)) {
+                    try {
+                        val socket = java.net.Socket()
+                        socket.connect(java.net.InetSocketAddress(ip, port), 30)
+                        socket.close()
+                    } catch (_: Exception) {}
+                }
+            }
+            debug.appendLine("  TCP connect done")
+        } catch (e: Exception) {
+            debug.appendLine("  TCP error: ${e.message}")
+        }
+    }
+
+    // ═══ قراءة ARP من كل المصادر ═══
+    private fun readArpFromAllSources(debug: StringBuilder): List<Device> {
+        // الطريقة 1: ip neigh (يُظهر الحالة)
+        var devices = readIpNeigh(debug)
+        if (devices.isNotEmpty()) return devices
+
+        // الطريقة 2: /proc/net/arp
+        devices = readArpFromFile()
+        if (devices.isNotEmpty()) return devices
+
+        // الطريقة 3: arp -a
+        devices = readArpFromCommand("arp -a")
+        if (devices.isNotEmpty()) return devices
+
+        // الطريقة 4: cat /proc/net/arp
+        devices = readArpFromCommand("cat /proc/net/arp")
+        return devices
+    }
+
+    // ═══ ip neigh — يُظهر حالة الجهاز ═══
+    private fun readIpNeigh(debug: StringBuilder): List<Device> {
+        val devices = mutableListOf<Device>()
+        try {
+            val p = Runtime.getRuntime().exec(arrayOf("sh", "-c", "ip neigh"))
+            val reader = BufferedReader(InputStreamReader(p.inputStream))
+            var line = reader.readLine()
+            while (line != null) {
+                try {
+                    val device = parseIpNeighLine(line)
+                    if (device != null) devices.add(device)
+                } catch (_: Exception) {}
+                line = reader.readLine()
+            }
+            p.waitFor()
+            debug.appendLine("  ip neigh: ${devices.size} devices")
+        } catch (e: Exception) {
+            debug.appendLine("  ip neigh error: ${e.message}")
+        }
+        return devices
+    }
+
+    // ═══ تحليل سطر ip neigh ═══
+    // التنسيق: 192.168.0.1 dev wlan0 lladdr AA:BB:CC:DD:EE:FF REACHABLE
+    private fun parseIpNeighLine(line: String): Device? {
+        val macRegex = Regex("[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}")
+        val ipRegex = Regex("(\\d{1,3}\\.){3}\\d{1,3}")
+
+        val macMatch = macRegex.find(line) ?: return null
+        val mac = macMatch.value.uppercase()
+        if (mac == "00:00:00:00:00:00") return null
+
+        val ipMatch = ipRegex.find(line)
+        val ip = ipMatch?.value ?: return null
+
+        // تحقق من الحالة
+        val upperLine = line.uppercase()
+        val state = when {
+            upperLine.contains("REACHABLE") -> "REACHABLE"
+            upperLine.contains("STALE") -> "STALE"
+            upperLine.contains("DELAY") -> "DELAY"
+            upperLine.contains("PROBE") -> "PROBE"
+            upperLine.contains("FAILED") -> return null  // غير متصل
+            upperLine.contains("INCOMPLETE") -> return null  // غير متصل
+            else -> "UNKNOWN"
+        }
+
+        return Device(
+            mac = mac,
+            ip = ip,
+            hostname = nameFor(ip, mac),
+            connectionType = if (ip == (try { storage.getRouterIp() } catch (_: Exception) { "" })) "Router" else "WiFi ($state)"
+        )
+    }
+
     private fun readArpFromFile(): List<Device> {
         val devices = mutableListOf<Device>()
         var reader: BufferedReader? = null
         try {
             val file = File("/proc/net/arp")
-            if (!file.exists()) return emptyList()
-            if (!file.canRead()) return emptyList()
-
+            if (!file.exists() || !file.canRead()) return emptyList()
             reader = BufferedReader(FileReader(file))
             reader.readLine()
             var line = reader.readLine()
@@ -203,18 +267,15 @@ class RouterRepository(private val storage: SecureStorage) {
                 line = reader.readLine()
             }
         } catch (_: Exception) {}
-        finally {
-            try { reader?.close() } catch (_: Exception) {}
-        }
+        finally { try { reader?.close() } catch (_: Exception) {} }
         return devices
     }
 
-    // ═══ قراءة ARP من أمر shell ═══
     private fun readArpFromCommand(command: String): List<Device> {
         val devices = mutableListOf<Device>()
         var process: Process? = null
         try {
-            process = Runtime.getRuntime().exec(command)
+            process = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
             val reader = BufferedReader(InputStreamReader(process.inputStream))
             var line = reader.readLine()
             while (line != null) {
@@ -226,54 +287,46 @@ class RouterRepository(private val storage: SecureStorage) {
             }
             process.waitFor()
         } catch (_: Exception) {}
-        finally {
-            try { process?.destroy() } catch (_: Exception) {}
-        }
+        finally { try { process?.destroy() } catch (_: Exception) {} }
         return devices
     }
 
-    // ═══ تحليل سطر ARP من أي تنسيق ═══
     private fun parseArpLine(line: String): Device? {
         val macRegex = Regex("[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}")
         val ipRegex = Regex("(\\d{1,3}\\.){3}\\d{1,3}")
-
         val macMatch = macRegex.find(line) ?: return null
         val mac = macMatch.value.uppercase()
-
         if (mac == "00:00:00:00:00:00") return null
-
-        val ipMatch = ipRegex.find(line)
-        val ip = ipMatch?.value ?: ""
-
-        if (ip.isBlank()) return null
-
-        return makeDevice(ip, mac)
+        val ipMatch = ipRegex.find(line) ?: return null
+        return makeDevice(ipMatch.value, mac)
     }
 
-    // ═══ فتح اتصال TCP لإجبار ARP ═══
-    private fun forceArpEntries(subnet: String, debug: StringBuilder) {
-        val ports = listOf(80, 443, 8080)
-        for (i in 1..30) {
-            val ip = "$subnet.$i"
-            for (port in ports) {
+    private fun readFromRouterApi(debug: StringBuilder): List<Device> {
+        try {
+            val api = RetrofitClient.getApi()
+            val cmds = listOf("station_list", "wifi_station_list", "dhcp_list", "client_list")
+            for (cmd in cmds) {
                 try {
-                    val socket = java.net.Socket()
-                    socket.connect(java.net.InetSocketAddress(ip, port), 50)
-                    socket.close()
-                } catch (_: Exception) {}
+                    val r = api.getGenericCmd(cmd = cmd)
+                    val b = r.body()?.string() ?: ""
+                    debug.appendLine("  [$cmd] -> ${b.take(100)}")
+                    if (b.length > 30 && !b.contains("\"\":\"$cmd\"")) {
+                        val devices = parseDevices(b)
+                        if (devices.isNotEmpty()) return devices
+                    }
+                } catch (e: Exception) {
+                    debug.appendLine("  [$cmd] error: ${e.message}")
+                }
             }
+        } catch (e: Exception) {
+            debug.appendLine("  API error: ${e.message}")
         }
-        debug.appendLine("TCP connect done for 30 IPs × 3 ports")
+        return emptyList()
     }
 
     private fun makeDevice(ip: String, mac: String): Device {
         val routerIp = try { storage.getRouterIp() } catch (_: Exception) { "" }
-        return Device(
-            mac = mac,
-            ip = ip,
-            hostname = nameFor(ip, mac),
-            connectionType = if (ip == routerIp) "Router" else "WiFi"
-        )
+        return Device(mac = mac, ip = ip, hostname = nameFor(ip, mac), connectionType = if (ip == routerIp) "Router" else "WiFi")
     }
 
     private fun nameFor(ip: String, mac: String): String {
@@ -291,105 +344,106 @@ class RouterRepository(private val storage: SecureStorage) {
             else -> ""
         }
         val s = ip.substringAfterLast(".")
-        return when {
-            v.isNotBlank() -> "$v ($s)"
-            s == "1" -> "الراوتر"
-            else -> "جهاز .$s"
-        }
+        return when { v.isNotBlank() -> "$v ($s)"; s == "1" -> "الراوتر"; else -> "جهاز .$s" }
     }
 
-    suspend fun testRouterConnection(): Result<String> {
-        return try {
-            withContext(Dispatchers.IO) {
-                val debug = StringBuilder()
-                debug.appendLine("=== TEST ===")
-
-                try {
-                    val r = RetrofitClient.getApi().getGenericCmd(cmd = "Language")
-                    debug.appendLine("Language: ${r.body()?.string()}")
-                } catch (e: Exception) {
-                    debug.appendLine("Language error: ${e.message}")
-                }
-
-                try {
-                    val r = RetrofitClient.getApi().getMacFilterList()
-                    debug.appendLine("MAC filter: ${r.body()?.string()}")
-                } catch (e: Exception) {
-                    debug.appendLine("MAC filter error: ${e.message}")
-                }
-
-                // ═══ اختبار كل طريقة ARP ═══
-                debug.appendLine("\n--- ARP file ---")
-                try {
-                    val f = File("/proc/net/arp")
-                    debug.appendLine("Exists: ${f.exists()}")
-                    debug.appendLine("Can read: ${f.canRead()}")
-                    if (f.exists() && f.canRead()) {
-                        val content = f.readText()
-                        debug.appendLine("Content:\n${content.take(500)}")
-                    }
-                } catch (e: Exception) {
-                    debug.appendLine("Error: ${e.message}")
-                }
-
-                debug.appendLine("\n--- ip neigh ---")
-                try {
-                    val p = Runtime.getRuntime().exec("ip neigh")
-                    val output = BufferedReader(InputStreamReader(p.inputStream)).readText()
-                    p.waitFor()
-                    debug.appendLine(output.take(500))
-                } catch (e: Exception) {
-                    debug.appendLine("Error: ${e.message}")
-                }
-
-                debug.appendLine("\n--- arp -a ---")
-                try {
-                    val p = Runtime.getRuntime().exec("arp -a")
-                    val output = BufferedReader(InputStreamReader(p.inputStream)).readText()
-                    p.waitFor()
-                    debug.appendLine(output.take(500))
-                } catch (e: Exception) {
-                    debug.appendLine("Error: ${e.message}")
-                }
-
-                debug.appendLine("\n--- TCP connect test ---")
-                try {
-                    val routerIp = storage.getRouterIp()
-                    val socket = java.net.Socket()
-                    socket.connect(java.net.InetSocketAddress(routerIp, 80), 1000)
-                    socket.close()
-                    debug.appendLine("TCP to $routerIp:80 SUCCESS")
-                    val arpAfter = readArpFromFile()
-                    debug.appendLine("ARP after TCP: ${arpAfter.size}")
-                    for (d in arpAfter) debug.appendLine("  ${d.ip} | ${d.mac}")
-                } catch (e: Exception) {
-                    debug.appendLine("TCP error: ${e.message}")
-                }
-
-                Result.success(debug.toString())
-            }
-        } catch (e: Exception) {
-            Result.failure(Exception("Test failed: ${e.message}"))
-        }
-    }
-
+    // ═══════════════════════════════════════════
+    // حظر — مع اختبار هل نجح فعلاً
+    // ═══════════════════════════════════════════
     suspend fun blockDevice(mac: String, currentBlockedList: List<String>): Result<String> {
         return try {
             withContext(Dispatchers.IO) {
+                val api = RetrofitClient.getApi()
+                val debug = StringBuilder()
                 val newList = (currentBlockedList + mac.uppercase()).joinToString(";")
-                val r = RetrofitClient.getApi().setMacFilter(macList = newList)
-                if (r.isSuccessful) Result.success("تم حظر الجهاز")
-                else Result.failure(Exception("فشل: ${r.code()}"))
+
+                debug.appendLine("=== BLOCK $mac ===")
+                debug.appendLine("List: $newList")
+
+                // ═══ المحاولة 1: إرسال القائمة كاملة ═══
+                debug.appendLine("\n--- Try 1: Full list ---")
+                try {
+                    val r1 = api.setMacFilter(macList = newList)
+                    val b1 = r1.body()?.string() ?: ""
+                    debug.appendLine("  Code: ${r1.code()}, Body: $b1")
+                } catch (e: Exception) {
+                    debug.appendLine("  Error: ${e.message}")
+                }
+
+                // ═══ المحاولة 2: تفعيل الفلتر أولاً ثم القائمة ═══
+                debug.appendLine("\n--- Try 2: Enable + Set ---")
+                try {
+                    val r2 = api.enableMacFilter(
+                        mode = "0",
+                        macList = newList
+                    )
+                    val b2 = r2.body()?.string() ?: ""
+                    debug.appendLine("  Code: ${r2.code()}, Body: $b2")
+                } catch (e: Exception) {
+                    debug.appendLine("  Error: ${e.message}")
+                }
+
+                // ═══ المحاولة 3: POST يدوي ═══
+                debug.appendLine("\n--- Try 3: Manual POST ---")
+                try {
+                    val body = "isTest=false&goformId=SET_WIFI_MAC_FILTER&mac_filter_enabled=1&mac_filter_mode=0&mac_filter_list=$newList"
+                    val requestBody = okhttp3.RequestBody.create(
+                        okhttp3.MediaType.parse("application/x-www-form-urlencoded"), body
+                    )
+                    val r3 = api.postRaw(requestBody)
+                    val b3 = r3.body()?.string() ?: ""
+                    debug.appendLine("  Code: ${r3.code()}, Body: $b3")
+                } catch (e: Exception) {
+                    debug.appendLine("  Error: ${e.message}")
+                }
+
+                // ═══ تحقق: هل الحظر نجح؟ ═══
+                debug.appendLine("\n--- Verify ---")
+                try {
+                    val verify = api.getMacFilterList()
+                    val vBody = verify.body()?.string() ?: ""
+                    debug.appendLine("  Filter list: $vBody")
+                    if (vBody.contains(mac, ignoreCase = true)) {
+                        debug.appendLine("  ✅ MAC found in filter!")
+                    } else {
+                        debug.appendLine("  ❌ MAC NOT in filter")
+                    }
+                } catch (e: Exception) {
+                    debug.appendLine("  Verify error: ${e.message}")
+                }
+
+                lastRawResponse = debug.toString()
+
+                // نُرجع النتيجة بناءً على التحقق
+                val verifyBody = try {
+                    RetrofitClient.getApi().getMacFilterList().body()?.string() ?: ""
+                } catch (_: Exception) { "" }
+
+                if (verifyBody.contains(mac, ignoreCase = true)) {
+                    Result.success("تم حظر الجهاز ✓")
+                } else {
+                    Result.failure(Exception("الراوتر لم ينفذ الحظر\n\n$debug"))
+                }
             }
         } catch (e: Exception) { Result.failure(e) }
     }
 
+    // ═══════════════════════════════════════════
+    // إلغاء حظر
+    // ═══════════════════════════════════════════
     suspend fun unblockDevice(mac: String, currentBlockedList: List<String>): Result<String> {
         return try {
             withContext(Dispatchers.IO) {
+                val api = RetrofitClient.getApi()
                 val newList = currentBlockedList.filter { it.uppercase() != mac.uppercase() }.joinToString(";")
-                val r = if (newList.isEmpty()) RetrofitClient.getApi().disableMacFilter()
-                else RetrofitClient.getApi().setMacFilter(macList = newList)
+
+                // جرب إزالة MAC
+                val r = if (newList.isEmpty()) {
+                    api.disableMacFilter()
+                } else {
+                    api.enableMacFilter(mode = "0", macList = newList)
+                }
+
                 if (r.isSuccessful) Result.success("تم إلغاء الحظر")
                 else Result.failure(Exception("فشل: ${r.code()}"))
             }
@@ -408,12 +462,45 @@ class RouterRepository(private val storage: SecureStorage) {
         } catch (_: Exception) { Result.success(emptyList()) }
     }
 
-    suspend fun logout() {
-        try {
+    suspend fun testRouterConnection(): Result<String> {
+        return try {
             withContext(Dispatchers.IO) {
-                try { RetrofitClient.getApi().logout() } catch (_: Exception) {}
+                val debug = StringBuilder()
+                debug.appendLine("=== TEST ===")
+
+                try {
+                    val r = RetrofitClient.getApi().getGenericCmd(cmd = "Language")
+                    debug.appendLine("Language: ${r.body()?.string()}")
+                } catch (e: Exception) { debug.appendLine("Language error: ${e.message}") }
+
+                try {
+                    val r = RetrofitClient.getApi().getMacFilterList()
+                    debug.appendLine("MAC filter: ${r.body()?.string()}")
+                } catch (e: Exception) { debug.appendLine("MAC filter error: ${e.message}") }
+
+                debug.appendLine("\n--- ARP Methods ---")
+                debug.appendLine("ip neigh:")
+                try {
+                    val p = Runtime.getRuntime().exec(arrayOf("sh", "-c", "ip neigh"))
+                    val output = BufferedReader(InputStreamReader(p.inputStream)).readText()
+                    p.waitFor()
+                    debug.appendLine(output.take(500))
+                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
+
+                debug.appendLine("\n/proc/net/arp:")
+                try {
+                    val f = File("/proc/net/arp")
+                    debug.appendLine("Exists: ${f.exists()}, Readable: ${f.canRead()}")
+                    if (f.canRead()) debug.appendLine(f.readText().take(500))
+                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
+
+                Result.success(debug.toString())
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) { Result.failure(Exception("Test failed: ${e.message}")) }
+    }
+
+    suspend fun logout() {
+        try { withContext(Dispatchers.IO) { try { RetrofitClient.getApi().logout() } catch (_: Exception) {} } } catch (_: Exception) {}
         storage.setLoggedIn(false)
         RetrofitClient.reset()
     }
@@ -436,9 +523,7 @@ class RouterRepository(private val storage: SecureStorage) {
             val macs = macPattern.findAll(raw).map { it.value.uppercase() }.distinct().toList()
             if (macs.isEmpty()) return emptyList()
             val ips = ipPattern.findAll(raw).map { it.value }.toList()
-            return macs.mapIndexed { i, mac ->
-                Device(mac = mac, ip = ips.getOrNull(i) ?: "", hostname = "جهاز ${i + 1}", connectionType = "WiFi")
-            }
+            return macs.mapIndexed { i, mac -> Device(mac = mac, ip = ips.getOrNull(i) ?: "", hostname = "جهاز ${i + 1}", connectionType = "WiFi") }
         } catch (_: Exception) { return emptyList() }
     }
 }
