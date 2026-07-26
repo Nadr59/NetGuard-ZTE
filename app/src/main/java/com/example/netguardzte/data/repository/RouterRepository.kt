@@ -10,7 +10,6 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.security.MessageDigest
 
 class RouterRepository(private val storage: SecureStorage) {
 
@@ -26,7 +25,7 @@ class RouterRepository(private val storage: SecureStorage) {
         private set
 
     // ═══════════════════════════════════════════
-    // تسجيل الدخول — نجرب عدة طرق
+    // تسجيل الدخول
     // ═══════════════════════════════════════════
     suspend fun login(
         routerIp: String,
@@ -40,86 +39,64 @@ class RouterRepository(private val storage: SecureStorage) {
             val api = RetrofitClient.getApi()
             val debug = StringBuilder()
 
-            // ═══ الخطوة 1: اطلب الصفحة الرئيسية للحصول على Cookies ═══
+            // ═══ الخطوة 1: اطلب الصفحة الرئيسية ═══
             debug.appendLine("=== STEP 1: Get initial page ===")
             try {
                 val initResponse = api.getGenericCmd(cmd = "multi_login")
                 debug.appendLine("Init code: ${initResponse.code()}")
-                readCookies(initResponse, debug)
+                readCookiesFromResponse(initResponse, debug)
             } catch (e: Exception) {
                 debug.appendLine("Init error: ${e.message}")
             }
 
-            // ═══ الخطوة 2: جرب كلمة المرور بعدة طرق ═══
-            val passwordMethods = listOf(
-                "base64" to Base64.encodeToString(password.toByteArray(Charsets.UTF_8), Base64.NO_WRAP),
-                "plain" to password,
-                "sha256" to sha256(password),
-                "sha256_base64" to Base64.encodeToString(sha256(password).toByteArray(), Base64.NO_WRAP)
+            // ═══ الخطوة 2: جرب تسجيل الدخول ═══
+            val encodedPassword = Base64.encodeToString(
+                password.toByteArray(Charsets.UTF_8),
+                Base64.NO_WRAP
             )
 
-            for ((method, encodedPass) in passwordMethods) {
-                debug.appendLine("\n=== STEP 2: Try login with $method ===")
-                debug.appendLine("Password ($method): ${encodedPass.take(20)}...")
+            debug.appendLine("\n=== STEP 2: Login ===")
+            debug.appendLine("Password (base64): ${encodedPassword.take(20)}...")
 
-                try {
-                    val response = api.login(password = encodedPass)
-                    val body = response.body()?.string() ?: ""
+            val response = api.login(password = encodedPassword)
+            val body = response.body()?.string() ?: ""
 
-                    debug.appendLine("Login code: ${response.code()}")
-                    debug.appendLine("Login body: ${body.take(200)}")
+            debug.appendLine("Login code: ${response.code()}")
+            debug.appendLine("Login body: ${body.take(200)}")
 
-                    // ═══ اقرأ Cookies من الاستجابة ═══
-                    readCookies(response, debug)
+            readCookiesFromResponse(response, debug)
+            cookieDebug = "Cookies: ${RetrofitClient.getCookiesString()}"
 
-                    cookieDebug = "Cookies: ${RetrofitClient.getCookiesString()}"
-
-                    // ═══ تحقق من النتيجة ═══
-                    if (body.contains("\"result\":\"0\"") || body.contains("\"result\":0")) {
-                        debug.appendLine("LOGIN SUCCESS with $method!")
-                        loginDebug = debug.toString()
-                        storage.saveCredentials(routerIp, username, password)
-                        storage.setLoggedIn(true)
-                        return@withContext Result.success("تم الاتصال ($method)")
-                    }
-
-                    if (body.contains("\"result\":\"3\"") || body.contains("\"result\":3")) {
-                        debug.appendLine("WRONG PASSWORD with $method")
-                        continue
-                    }
-
-                    // ═══ result: 1 قد يكون نجاح في بعض الإصدارات ═══
-                    if (body.contains("\"result\":\"1\"") || body.contains("\"result\":1")) {
-                        // تحقق: هل هناك Cookies صالحة؟
-                        if (RetrofitClient.getSessionCookie() != null) {
-                            debug.appendLine("result=1 but cookies exist - treating as success")
-                            loginDebug = debug.toString()
-                            storage.saveCredentials(routerIp, username, password)
-                            storage.setLoggedIn(true)
-                            return@withContext Result.success("تم الاتصال ($method)")
-                        }
-                        debug.appendLine("result=1 with no cookies - trying next method")
-                        continue
-                    }
-
-                    // ═══ أي نتيجة أخرى مع Cookies = نجاح ═══
-                    if (response.isSuccessful && RetrofitClient.getSessionCookie() != null) {
-                        debug.appendLine("Success with cookies using $method")
-                        loginDebug = debug.toString()
-                        storage.saveCredentials(routerIp, username, password)
-                        storage.setLoggedIn(true)
-                        return@withContext Result.success("تم الاتصال ($method)")
-                    }
-
-                } catch (e: Exception) {
-                    debug.appendLine("Error with $method: ${e.message}")
-                }
+            // ═══ result:3 = كلمة مرور خاطئة ═══
+            if (body.contains("\"result\":\"3\"") || body.contains("\"result\":3")) {
+                debug.appendLine("WRONG PASSWORD")
+                loginDebug = debug.toString()
+                return@withContext Result.failure(Exception("كلمة المرور خاطئة"))
             }
 
-            // ═══ لم ينجح أي طريقة ═══
-            debug.appendLine("\n=== ALL METHODS FAILED ===")
+            // ═══ result:0 أو result:1 = نجاح ═══
+            if (body.contains("\"result\":\"0\"") || body.contains("\"result\":0") ||
+                body.contains("\"result\":\"1\"") || body.contains("\"result\":1")
+            ) {
+                debug.appendLine("LOGIN SUCCESS!")
+                loginDebug = debug.toString()
+                storage.saveCredentials(routerIp, username, password)
+                storage.setLoggedIn(true)
+                return@withContext Result.success("تم الاتصال بالراوتر")
+            }
+
+            // ═══ أي نتيجة أخرى مع نجاح HTTP ═══
+            if (response.isSuccessful) {
+                debug.appendLine("HTTP success but unknown result, saving anyway")
+                loginDebug = debug.toString()
+                storage.saveCredentials(routerIp, username, password)
+                storage.setLoggedIn(true)
+                return@withContext Result.success("تم الاتصال (${response.code()})")
+            }
+
+            debug.appendLine("UNKNOWN RESULT")
             loginDebug = debug.toString()
-            Result.failure(Exception("فشل تسجيل الدخول (جربنا ${passwordMethods.size} طرق)\n\n$loginDebug"))
+            Result.failure(Exception("استجابة غير معروفة: $body"))
 
         } catch (e: Exception) {
             loginDebug = "Exception: ${e.message}"
@@ -128,7 +105,10 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     // ═══ قراءة Cookies من الاستجابة ═══
-    private fun readCookies(response: retrofit2.Response<*>, debug: StringBuilder) {
+    private fun readCookiesFromResponse(
+        response: retrofit2.Response<*>,
+        debug: StringBuilder
+    ) {
         val setCookies = response.headers().values("Set-Cookie")
         debug.appendLine("Set-Cookie headers: ${setCookies.size}")
         for (cookieHeader in setCookies) {
@@ -138,18 +118,11 @@ class RouterRepository(private val storage: SecureStorage) {
                 RetrofitClient.setSessionCookie(parts[0].trim(), parts[1].trim())
             }
         }
-        cookieDebug = "Cookies: ${RetrofitClient.getCookiesString()}"
         debug.appendLine("Stored cookies: ${RetrofitClient.getCookiesString()}")
     }
 
-    // ═══ SHA-256 ═══
-    private fun sha256(input: String): String {
-        val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
-        return bytes.joinToString("") { "%02x".format(it) }
-    }
-
     // ═══════════════════════════════════════════
-    // جلب الأجهزة
+    // جلب الأجهزة المتصلة
     // ═══════════════════════════════════════════
     suspend fun getConnectedDevices(): Result<List<Device>> = withContext(Dispatchers.IO) {
         try {
@@ -157,6 +130,8 @@ class RouterRepository(private val storage: SecureStorage) {
             val debug = StringBuilder()
 
             cookieDebug = "Cookies: ${RetrofitClient.getCookiesString()}"
+            debug.appendLine("=== DEVICE SCAN ===")
+            debug.appendLine("Cookies: ${RetrofitClient.getCookiesString()}")
 
             val commands = listOf(
                 "station_list",
@@ -174,9 +149,6 @@ class RouterRepository(private val storage: SecureStorage) {
                 "wds_station_list"
             )
 
-            debug.appendLine("=== DEVICE SCAN ===")
-            debug.appendLine("Cookies: ${RetrofitClient.getCookiesString()}")
-
             for (cmdName in commands) {
                 try {
                     val response = api.getGenericCmd(cmd = cmdName)
@@ -186,7 +158,7 @@ class RouterRepository(private val storage: SecureStorage) {
                         "HTTP ${response.code()}"
                     }
 
-                    debug.appendLine("\n[$cmdName] → ${response.code()}: ${rawBody.take(100)}")
+                    debug.appendLine("\n[$cmdName] -> ${response.code()}: ${rawBody.take(100)}")
 
                     if (response.isSuccessful && hasRealData(rawBody, cmdName)) {
                         lastRawResponse = rawBody
@@ -198,12 +170,11 @@ class RouterRepository(private val storage: SecureStorage) {
                             return@withContext Result.success(devices)
                         }
                     } else if (response.code() == 401) {
-                        debug.appendLine("  → 401 Unauthorized! Re-logging in...")
+                        debug.appendLine("  -> 401 Unauthorized, re-logging in...")
                         autoRelogin()
-                        debug.appendLine("  → Re-login done. Cookies: ${RetrofitClient.getCookiesString()}")
                     }
                 } catch (e: Exception) {
-                    debug.appendLine("[$cmdName] → ERROR: ${e.message}")
+                    debug.appendLine("[$cmdName] -> ERROR: ${e.message}")
                 }
             }
 
@@ -218,14 +189,16 @@ class RouterRepository(private val storage: SecureStorage) {
                     )
                 )
             } else {
-                Result.failure(Exception("لا توجد استجابة من الراوتر\n\n$allCommandsDebug"))
+                Result.failure(Exception("لا توجد استجابة من الراوتر"))
             }
-
         } catch (e: Exception) {
-            Result.failure(Exception("فشل: ${e.message}"))
+            Result.failure(Exception("فشل جلب الأجهزة: ${e.message}"))
         }
     }
 
+    // ═══════════════════════════════════════════
+    // تحقق هل الاستجابة تحتوي بيانات حقيقية
+    // ═══════════════════════════════════════════
     private fun hasRealData(body: String, cmdName: String): Boolean {
         if (body.isBlank()) return false
         if (body == "{}") return false
@@ -238,6 +211,9 @@ class RouterRepository(private val storage: SecureStorage) {
         return false
     }
 
+    // ═══════════════════════════════════════════
+    // تحليل الاستجابة بعدة طرق
+    // ═══════════════════════════════════════════
     private fun tryAllParsingMethods(rawBody: String): List<Device> {
         if (rawBody.isBlank()) return emptyList()
 
@@ -272,13 +248,18 @@ class RouterRepository(private val storage: SecureStorage) {
                     val parsed = JsonParser.parseString(str)
                     if (parsed.isJsonArray) parseJsonArray(parsed.asJsonArray)
                     else emptyList()
-                } catch (_: Exception) { emptyList() }
+                } catch (_: Exception) {
+                    emptyList()
+                }
             }
             element.isJsonObject -> {
                 val obj = element.asJsonObject
-                val list = obj.get("station_list") ?: obj.get("devices") ?: obj.get("clients")
-                if (list != null) tryParseDeviceArray(list)
-                else {
+                val list = obj.get("station_list")
+                    ?: obj.get("devices")
+                    ?: obj.get("clients")
+                if (list != null) {
+                    tryParseDeviceArray(list)
+                } else {
                     val d = parseSingleDevice(obj)
                     if (d != null) listOf(d) else emptyList()
                 }
@@ -305,15 +286,23 @@ class RouterRepository(private val storage: SecureStorage) {
         return Device(
             mac = mac.uppercase(),
             ip = findField(obj, "ip", "ip_addr", "ipAddress", "address"),
-            hostname = findField(obj, "hostname", "name", "host_name", "device_name", "client_name")
-                .ifBlank { "جهاز غير معروف" },
-            connectionType = findField(obj, "conn_type", "wlan_type", "type", "connection")
-                .ifBlank { "WiFi" }
+            hostname = findField(
+                obj,
+                "hostname", "name", "host_name",
+                "device_name", "client_name"
+            ).ifBlank { "جهاز غير معروف" },
+            connectionType = findField(
+                obj,
+                "conn_type", "wlan_type", "type", "connection"
+            ).ifBlank { "WiFi" }
         )
     }
 
     private fun findMac(obj: JsonObject): String {
-        val fields = listOf("mac", "mac_addr", "mac_address", "MacAddress", "MAC", "hwaddr")
+        val fields = listOf(
+            "mac", "mac_addr", "mac_address",
+            "MacAddress", "MAC", "hwaddr"
+        )
         for (f in fields) {
             val v = getFieldStr(obj, f)
             if (v.isNotBlank() && isValidMac(v)) return v
@@ -341,81 +330,155 @@ class RouterRepository(private val storage: SecureStorage) {
                 el.isJsonPrimitive -> el.asString
                 else -> el.toString()
             }
-        } catch (_: Exception) { "" }
+        } catch (_: Exception) {
+            ""
+        }
     }
 
     private fun isValidMac(v: String): Boolean {
-        return Regex("[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}")
-            .matches(v.trim())
+        return Regex(
+            "[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-]" +
+            "[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-]" +
+            "[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}"
+        ).matches(v.trim())
     }
 
     private fun tryParseWithRegex(raw: String): List<Device> {
         val macPattern = Regex("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}")
         val ipPattern = Regex("(\\d{1,3}\\.){3}\\d{1,3}")
 
-        val macs = macPattern.findAll(raw).map { it.value.uppercase() }.distinct().toList()
+        val macs = macPattern.findAll(raw)
+            .map { it.value.uppercase() }
+            .distinct()
+            .toList()
+
         if (macs.isEmpty()) return emptyList()
 
         val ips = ipPattern.findAll(raw).map { it.value }.toList()
 
         return macs.mapIndexed { i, mac ->
-            Device(mac = mac, ip = ips.getOrNull(i) ?: "", hostname = "جهاز ${i + 1}", connectionType = "Unknown")
+            Device(
+                mac = mac,
+                ip = ips.getOrNull(i) ?: "",
+                hostname = "جهاز ${i + 1}",
+                connectionType = "Unknown"
+            )
         }
     }
 
-    suspend fun blockDevice(mac: String, currentBlockedList: List<String>): Result<String> =
-        withContext(Dispatchers.IO) {
-            try {
-                val api = RetrofitClient.getApi()
-                val newList = (currentBlockedList + mac.uppercase()).joinToString(";")
-                val response = api.setMacFilter(macList = newList)
+    // ═══════════════════════════════════════════
+    // حظر جهاز
+    // ═══════════════════════════════════════════
+    suspend fun blockDevice(
+        mac: String,
+        currentBlockedList: List<String>
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val api = RetrofitClient.getApi()
+            val newList = (currentBlockedList + mac.uppercase()).joinToString(";")
+            val response = api.setMacFilter(macList = newList)
 
-                if (response.isSuccessful) Result.success("تم حظر الجهاز")
-                else if (response.code() == 401) {
-                    autoRelogin()
-                    val retry = RetrofitClient.getApi().setMacFilter(macList = newList)
-                    if (retry.isSuccessful) Result.success("تم الحظر")
-                    else Result.failure(Exception("فشل: ${retry.code()}"))
-                } else Result.failure(Exception("فشل: ${response.code()}"))
-            } catch (e: Exception) { Result.failure(e) }
+            if (response.isSuccessful) {
+                Result.success("تم حظر الجهاز")
+            } else if (response.code() == 401) {
+                autoRelogin()
+                val retry = RetrofitClient.getApi().setMacFilter(macList = newList)
+                if (retry.isSuccessful) {
+                    Result.success("تم الحظر")
+                } else {
+                    Result.failure(Exception("فشل: ${retry.code()}"))
+                }
+            } else {
+                Result.failure(Exception("فشل الحظر: ${response.code()}"))
+            }
+        } catch (e: Exception) {
+            Result.failure(Exception("فشل الحظر: ${e.message}"))
         }
+    }
 
-    suspend fun unblockDevice(mac: String, currentBlockedList: List<String>): Result<String> =
-        withContext(Dispatchers.IO) {
-            try {
-                val api = RetrofitClient.getApi()
-                val newList = currentBlockedList.filter { it.uppercase() != mac.uppercase() }.joinToString(";")
-                val response = if (newList.isEmpty()) api.disableMacFilter() else api.setMacFilter(macList = newList)
+    // ═══════════════════════════════════════════
+    // إلغاء حظر جهاز
+    // ═══════════════════════════════════════════
+    suspend fun unblockDevice(
+        mac: String,
+        currentBlockedList: List<String>
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val api = RetrofitClient.getApi()
+            val newList = currentBlockedList
+                .filter { it.uppercase() != mac.uppercase() }
+                .joinToString(";")
 
-                if (response.isSuccessful) Result.success("تم إلغاء الحظر")
-                else if (response.code() == 401) {
-                    autoRelogin()
-                    val ra = RetrofitClient.getApi()
-                    val r = if (newList.isEmpty()) ra.disableMacFilter() else ra.setMacFilter(macList = newList)
-                    if (r.isSuccessful) Result.success("تم إلغاء الحظر") else Result.failure(Exception("فشل"))
-                } else Result.failure(Exception("فشل: ${response.code()}"))
-            } catch (e: Exception) { Result.failure(e) }
+            val response = if (newList.isEmpty()) {
+                api.disableMacFilter()
+            } else {
+                api.setMacFilter(macList = newList)
+            }
+
+            if (response.isSuccessful) {
+                Result.success("تم إلغاء الحظر")
+            } else if (response.code() == 401) {
+                autoRelogin()
+                val retryApi = RetrofitClient.getApi()
+                val retry = if (newList.isEmpty()) {
+                    retryApi.disableMacFilter()
+                } else {
+                    retryApi.setMacFilter(macList = newList)
+                }
+                if (retry.isSuccessful) {
+                    Result.success("تم إلغاء الحظر")
+                } else {
+                    Result.failure(Exception("فشل: ${retry.code()}"))
+                }
+            } else {
+                Result.failure(Exception("فشل إلغاء الحظر: ${response.code()}"))
+            }
+        } catch (e: Exception) {
+            Result.failure(Exception("فشل إلغاء الحظر: ${e.message}"))
         }
+    }
 
+    // ═══════════════════════════════════════════
+    // جلب قائمة الحظر
+    // ═══════════════════════════════════════════
     suspend fun getBlockedMacs(): Result<List<String>> = withContext(Dispatchers.IO) {
         try {
             val response = RetrofitClient.getApi().getMacFilterList()
             if (response.isSuccessful) {
                 val body = response.body()?.string() ?: ""
-                Result.success(Regex("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}").findAll(body).map { it.value.uppercase() }.toList())
-            } else Result.success(emptyList())
-        } catch (_: Exception) { Result.success(emptyList()) }
+                val macs = Regex("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}")
+                    .findAll(body)
+                    .map { it.value.uppercase() }
+                    .toList()
+                Result.success(macs)
+            } else {
+                Result.success(emptyList())
+            }
+        } catch (_: Exception) {
+            Result.success(emptyList())
+        }
     }
 
+    // ═══════════════════════════════════════════
+    // تسجيل الخروج
+    // ═══════════════════════════════════════════
     suspend fun logout() = withContext(Dispatchers.IO) {
-        try { RetrofitClient.getApi().logout() } catch (_: Exception) {}
+        try {
+            RetrofitClient.getApi().logout()
+        } catch (_: Exception) {}
         storage.setLoggedIn(false)
         RetrofitClient.reset()
     }
 
+    // ═══════════════════════════════════════════
+    // إعادة تسجيل الدخول التلقائية
+    // ═══════════════════════════════════════════
     private suspend fun autoRelogin() {
         try {
-            val encoded = Base64.encodeToString(storage.getPassword().toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+            val encoded = Base64.encodeToString(
+                storage.getPassword().toByteArray(Charsets.UTF_8),
+                Base64.NO_WRAP
+            )
             RetrofitClient.setRouterAddress(storage.getRouterIp())
             val response = RetrofitClient.getApi().login(password = encoded)
             val setCookies = response.headers().values("Set-Cookie")
