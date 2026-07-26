@@ -89,7 +89,7 @@ class RouterRepository(private val storage: SecureStorage) {
                     }
 
                     // ═══ result: 1 قد يكون نجاح في بعض الإصدارات ═══
-                    if (body.contains("\"result\":\"1\"") || body.contains("\"result\":1)) {
+                    if (body.contains("\"result\":\"1\"") || body.contains("\"result\":1")) {
                         // تحقق: هل هناك Cookies صالحة؟
                         if (RetrofitClient.getSessionCookie() != null) {
                             debug.appendLine("result=1 but cookies exist - treating as success")
