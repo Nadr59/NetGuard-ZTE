@@ -2,6 +2,7 @@ package com.example.netguardzte.data.repository
 
 import android.util.Base64
 import com.example.netguardzte.data.api.RetrofitClient
+import com.example.netguardzte.data.api.ZteRouterApi
 import com.example.netguardzte.data.local.SecureStorage
 import com.example.netguardzte.domain.model.Device
 import com.google.gson.JsonArray
@@ -10,6 +11,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import retrofit2.Response
 
 class RouterRepository(private val storage: SecureStorage) {
 
@@ -53,7 +55,7 @@ class RouterRepository(private val storage: SecureStorage) {
                 debug.appendLine("Page load error: ${e.message}")
             }
 
-            // ═══ الخطوة 2: اطلب معلومات النظام (ل激活 الجلسة) ═══
+            // ═══ الخطوة 2: اطلب معلومات النظام ═══
             debug.appendLine("\n=== STEP 2: System info ===")
             try {
                 val sysInfo = api.getSystemInfo()
@@ -123,10 +125,7 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     // ═══ تفعيل الجلسة بعد تسجيل الدخول ═══
-    private suspend fun activateSession(
-        api: com.example.netguardzte.data.api.ZteRouterApi,
-        debug: StringBuilder
-    ) {
+    private suspend fun activateSession(api: ZteRouterApi, debug: StringBuilder) {
         val activateCommands = listOf(
             "Language,cr_version,wa_inner_version",
             "wifi_onoff",
@@ -149,7 +148,7 @@ class RouterRepository(private val storage: SecureStorage) {
 
     // ═══ قراءة Cookies ═══
     private fun readCookiesFromResponse(
-        response: retrofit2.Response<*>,
+        response: Response<*>,
         debug: StringBuilder
     ) {
         val setCookies = response.headers().values("Set-Cookie")
@@ -166,7 +165,7 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     // ═══════════════════════════════════════════
-    // جلب الأجهزة المتصلة — كل الطرق الممكنة
+    // جلب الأجهزة المتصلة
     // ═══════════════════════════════════════════
     suspend fun getConnectedDevices(): Result<List<Device>> = withContext(Dispatchers.IO) {
         try {
@@ -250,7 +249,7 @@ class RouterRepository(private val storage: SecureStorage) {
                 return@withContext Result.success(htmlDevices)
             }
 
-            // ═══ الطريقة 4: إعادة تسجيل الدخول ثم المحاولة ═══
+            // ═══ الطريقة 4: إعادة تسجيل الدخول ═══
             debug.appendLine("\n=== TRY RE-LOGIN ===")
             reloginAndRetry(api, debug)
 
@@ -274,13 +273,13 @@ class RouterRepository(private val storage: SecureStorage) {
 
     // ═══ سحب صفحة HTML والبحث عن أجهزة ═══
     private suspend fun scrapeHtmlForDevices(
-        api: com.example.netguardzte.data.api.ZteRouterApi,
+        api: ZteRouterApi,
         debug: StringBuilder
     ): List<Device> {
-        val pages = listOf(
-            "main page" to { api.getMainPage() },
-            "status page" to { api.getStatusPage() },
-            "wifi page" to { api.getWifiPage() }
+        val pages: List<Pair<String, suspend () -> Response<*>>> = listOf(
+            "main page" to suspend { api.getMainPage() },
+            "status page" to suspend { api.getStatusPage() },
+            "wifi page" to suspend { api.getWifiPage() }
         )
 
         for ((name, pageCall) in pages) {
@@ -346,7 +345,6 @@ class RouterRepository(private val storage: SecureStorage) {
 
     // ═══ استخراج أجهزة من HTML ═══
     private fun extractDevicesFromHtml(html: String): List<Device> {
-        val devices = mutableListOf<Device>()
         val macPattern = Regex("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}")
         val ipPattern = Regex("(\\d{1,3}\\.){3}\\d{1,3}")
 
@@ -357,30 +355,23 @@ class RouterRepository(private val storage: SecureStorage) {
 
         if (macs.isEmpty()) return emptyList()
 
-        // استبعد MAC addresses الخاصة بالراوتر
         val routerMacs = setOf("FF:FF:FF:FF:FF:FF", "00:00:00:00:00:00")
         val clientMacs = macs.filter { it !in routerMacs }
 
         val ips = ipPattern.findAll(html).map { it.value }.toList()
 
-        for ((i, mac) in clientMacs.withIndex()) {
-            devices.add(
-                Device(
-                    mac = mac,
-                    ip = ips.getOrNull(i) ?: "",
-                    hostname = "جهاز ${i + 1}",
-                    connectionType = "WiFi"
-                )
+        return clientMacs.mapIndexed { i, mac ->
+            Device(
+                mac = mac,
+                ip = ips.getOrNull(i) ?: "",
+                hostname = "جهاز ${i + 1}",
+                connectionType = "WiFi"
             )
         }
-        return devices
     }
 
     // ═══ إعادة تسجيل الدخول ثم محاولة ═══
-    private suspend fun reloginAndRetry(
-        api: com.example.netguardzte.data.api.ZteRouterApi,
-        debug: StringBuilder
-    ) {
+    private suspend fun reloginAndRetry(api: ZteRouterApi, debug: StringBuilder) {
         try {
             val encoded = Base64.encodeToString(
                 storage.getPassword().toByteArray(Charsets.UTF_8),
@@ -391,10 +382,8 @@ class RouterRepository(private val storage: SecureStorage) {
             debug.appendLine("Re-login: ${loginResponse.code()} $loginBody")
             readCookiesFromResponse(loginResponse, debug)
 
-            // Activate session
             activateSession(api, debug)
 
-            // Try station_list again
             val r = api.getGenericCmd(cmd = "station_list")
             val b = r.body()?.string() ?: ""
             debug.appendLine("After re-login [station_list]: ${r.code()}: ${b.take(150)}")
@@ -461,7 +450,9 @@ class RouterRepository(private val storage: SecureStorage) {
             }
             element.isJsonObject -> {
                 val obj = element.asJsonObject
-                val list = obj.get("station_list") ?: obj.get("devices") ?: obj.get("clients")
+                val list = obj.get("station_list")
+                    ?: obj.get("devices")
+                    ?: obj.get("clients")
                 if (list != null) tryParseDeviceArray(list)
                 else {
                     val d = parseSingleDevice(obj)
@@ -489,10 +480,12 @@ class RouterRepository(private val storage: SecureStorage) {
         return Device(
             mac = mac.uppercase(),
             ip = findField(obj, "ip", "ip_addr", "ipAddress", "address"),
-            hostname = findField(obj, "hostname", "name", "host_name", "device_name", "client_name")
-                .ifBlank { "جهاز غير معروف" },
-            connectionType = findField(obj, "conn_type", "wlan_type", "type", "connection")
-                .ifBlank { "WiFi" }
+            hostname = findField(
+                obj, "hostname", "name", "host_name", "device_name", "client_name"
+            ).ifBlank { "جهاز غير معروف" },
+            connectionType = findField(
+                obj, "conn_type", "wlan_type", "type", "connection"
+            ).ifBlank { "WiFi" }
         )
     }
 
@@ -529,8 +522,11 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     private fun isValidMac(v: String): Boolean {
-        return Regex("[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}")
-            .matches(v.trim())
+        return Regex(
+            "[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-]" +
+            "[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-]" +
+            "[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}"
+        ).matches(v.trim())
     }
 
     private fun tryParseWithRegex(raw: String): List<Device> {
@@ -540,52 +536,89 @@ class RouterRepository(private val storage: SecureStorage) {
         if (macs.isEmpty()) return emptyList()
         val ips = ipPattern.findAll(raw).map { it.value }.toList()
         return macs.mapIndexed { i, mac ->
-            Device(mac = mac, ip = ips.getOrNull(i) ?: "", hostname = "جهاز ${i + 1}", connectionType = "Unknown")
+            Device(
+                mac = mac,
+                ip = ips.getOrNull(i) ?: "",
+                hostname = "جهاز ${i + 1}",
+                connectionType = "Unknown"
+            )
         }
     }
 
     // ═══════════════════════════════════════════
     // حظر / إلغاء حظر / قائمة الحظر
     // ═══════════════════════════════════════════
-    suspend fun blockDevice(mac: String, currentBlockedList: List<String>): Result<String> =
-        withContext(Dispatchers.IO) {
-            try {
-                val api = RetrofitClient.getApi()
-                val newList = (currentBlockedList + mac.uppercase()).joinToString(";")
-                val response = api.setMacFilter(macList = newList)
-                if (response.isSuccessful) Result.success("تم حظر الجهاز")
-                else if (response.code() == 401) {
-                    autoRelogin()
-                    val retry = RetrofitClient.getApi().setMacFilter(macList = newList)
-                    if (retry.isSuccessful) Result.success("تم الحظر") else Result.failure(Exception("فشل"))
-                } else Result.failure(Exception("فشل: ${response.code()}"))
-            } catch (e: Exception) { Result.failure(e) }
+    suspend fun blockDevice(
+        mac: String,
+        currentBlockedList: List<String>
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val api = RetrofitClient.getApi()
+            val newList = (currentBlockedList + mac.uppercase()).joinToString(";")
+            val response = api.setMacFilter(macList = newList)
+            if (response.isSuccessful) {
+                Result.success("تم حظر الجهاز")
+            } else if (response.code() == 401) {
+                autoRelogin()
+                val retry = RetrofitClient.getApi().setMacFilter(macList = newList)
+                if (retry.isSuccessful) Result.success("تم الحظر")
+                else Result.failure(Exception("فشل"))
+            } else {
+                Result.failure(Exception("فشل: ${response.code()}"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
         }
+    }
 
-    suspend fun unblockDevice(mac: String, currentBlockedList: List<String>): Result<String> =
-        withContext(Dispatchers.IO) {
-            try {
-                val api = RetrofitClient.getApi()
-                val newList = currentBlockedList.filter { it.uppercase() != mac.uppercase() }.joinToString(";")
-                val response = if (newList.isEmpty()) api.disableMacFilter() else api.setMacFilter(macList = newList)
-                if (response.isSuccessful) Result.success("تم إلغاء الحظر")
-                else if (response.code() == 401) {
-                    autoRelogin()
-                    val ra = RetrofitClient.getApi()
-                    val r = if (newList.isEmpty()) ra.disableMacFilter() else ra.setMacFilter(macList = newList)
-                    if (r.isSuccessful) Result.success("تم إلغاء الحظر") else Result.failure(Exception("فشل"))
-                } else Result.failure(Exception("فشل: ${response.code()}"))
-            } catch (e: Exception) { Result.failure(e) }
+    suspend fun unblockDevice(
+        mac: String,
+        currentBlockedList: List<String>
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val api = RetrofitClient.getApi()
+            val newList = currentBlockedList
+                .filter { it.uppercase() != mac.uppercase() }
+                .joinToString(";")
+            val response = if (newList.isEmpty()) {
+                api.disableMacFilter()
+            } else {
+                api.setMacFilter(macList = newList)
+            }
+            if (response.isSuccessful) {
+                Result.success("تم إلغاء الحظر")
+            } else if (response.code() == 401) {
+                autoRelogin()
+                val ra = RetrofitClient.getApi()
+                val r = if (newList.isEmpty()) ra.disableMacFilter()
+                else ra.setMacFilter(macList = newList)
+                if (r.isSuccessful) Result.success("تم إلغاء الحظر")
+                else Result.failure(Exception("فشل"))
+            } else {
+                Result.failure(Exception("فشل: ${response.code()}"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
         }
+    }
 
     suspend fun getBlockedMacs(): Result<List<String>> = withContext(Dispatchers.IO) {
         try {
             val response = RetrofitClient.getApi().getMacFilterList()
             if (response.isSuccessful) {
                 val body = response.body()?.string() ?: ""
-                Result.success(Regex("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}").findAll(body).map { it.value.uppercase() }.toList())
-            } else Result.success(emptyList())
-        } catch (_: Exception) { Result.success(emptyList()) }
+                Result.success(
+                    Regex("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}")
+                        .findAll(body)
+                        .map { it.value.uppercase() }
+                        .toList()
+                )
+            } else {
+                Result.success(emptyList())
+            }
+        } catch (_: Exception) {
+            Result.success(emptyList())
+        }
     }
 
     suspend fun logout() = withContext(Dispatchers.IO) {
@@ -596,10 +629,13 @@ class RouterRepository(private val storage: SecureStorage) {
 
     private suspend fun autoRelogin() {
         try {
-            val encoded = Base64.encodeToString(storage.getPassword().toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+            val encoded = Base64.encodeToString(
+                storage.getPassword().toByteArray(Charsets.UTF_8),
+                Base64.NO_WRAP
+            )
             RetrofitClient.setRouterAddress(storage.getRouterIp())
             val response = RetrofitClient.getApi().login(password = encoded)
             readCookiesFromResponse(response, StringBuilder())
         } catch (_: Exception) {}
     }
-}  
+}
