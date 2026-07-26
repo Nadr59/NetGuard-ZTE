@@ -6,6 +6,7 @@ import retrofit2.http.*
 
 interface ZteRouterApi {
 
+    // ═══ تسجيل الدخول ═══
     @FormUrlEncoded
     @POST("goform/goform_set_cmd_process")
     suspend fun login(
@@ -14,42 +15,42 @@ interface ZteRouterApi {
         @Field("password") password: String
     ): Response<ResponseBody>
 
-    // ═══ جلب الأجهزة — نجرب عدة أوامر ═══
-
-    @GET("goform/goform_get_cmd_process")
-    suspend fun getStationList(
-        @Query("cmd") cmd: String = "station_list",
-        @Query("multimode") multimode: String = "0"
-    ): Response<ResponseBody>
-
-    @GET("goform/goform_get_cmd_process")
-    suspend fun getDhcpList(
-        @Query("cmd") cmd: String = "dhcp_list"
-    ): Response<ResponseBody>
-
-    @GET("goform/goform_get_cmd_process")
-    suspend fun getClientList(
-        @Query("cmd") cmd: String = "client_list"
-    ): Response<ResponseBody>
-
-    @GET("goform/goform_get_cmd_process")
-    suspend fun getLanStationList(
-        @Query("cmd") cmd: String = "lan_station_list"
-    ): Response<ResponseBody>
-
-    @GET("goform/goform_get_cmd_process")
-    suspend fun getWifiClientList(
-        @Query("cmd") cmd: String = "wifi_client_list"
-    ): Response<ResponseBody>
-
+    // ═══ جلب أوامر عامة ═══
     @GET("goform/goform_get_cmd_process")
     suspend fun getGenericCmd(
         @Query("cmd") cmd: String,
         @Query("multimode") multimode: String = "0"
     ): Response<ResponseBody>
 
-    // ═══ MAC Filter ═══
+    // ═══ جلب معلومات النظام (ل激活 الجلسة) ═══
+    @GET("goform/goform_get_cmd_process")
+    suspend fun getSystemInfo(
+        @Query("cmd") cmd: String = "Language,cr_version,wa_inner_version"
+    ): Response<ResponseBody>
 
+    // ═══ الصفحة الرئيسية HTML ═══
+    @GET(".")
+    suspend fun getMainPage(): Response<ResponseBody>
+
+    @GET("index.html")
+    suspend fun getIndexPage(): Response<ResponseBody>
+
+    // ═══ صفحات الحالة ═══
+    @GET("status.html")
+    suspend fun getStatusPage(): Response<ResponseBody>
+
+    @GET("wifi.html")
+    suspend fun getWifiPage(): Response<ResponseBody>
+
+    // ═══ جلب بـ POST (بعض الراوترات تحتاج POST) ═══
+    @FormUrlEncoded
+    @POST("goform/goform_set_cmd_process")
+    suspend fun postGetStationList(
+        @Field("isTest") isTest: String = "false",
+        @Field("goformId") goformId: String = "GET_STATION_LIST"
+    ): Response<ResponseBody>
+
+    // ═══ MAC Filter ═══
     @FormUrlEncoded
     @POST("goform/goform_set_cmd_process")
     suspend fun setMacFilter(
@@ -74,7 +75,6 @@ interface ZteRouterApi {
     ): Response<ResponseBody>
 
     // ═══ تسجيل الخروج ═══
-
     @FormUrlEncoded
     @POST("goform/goform_set_cmd_process")
     suspend fun logout(
