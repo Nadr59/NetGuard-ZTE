@@ -44,10 +44,10 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
             username = storage.getUsername(),
             currentScreen = if (storage.isLoggedIn() && storage.hasCredentials()) "devices" else "login"
         )
-        if (storage.isLoggedIn()) loadDevices()
+        if (storage.isLoggedIn()) load String) {Devices()
     }
 
-    fun onRouterIpChanged(ip: String) { _uiState.value = _uiState.value.copy(routerIp = ip, loginError = null) }
+    fun onRouterIpChanged(ip: _uiState.value = _uiState.value.copy(routerIp = ip, loginError = null) }
     fun onUsernameChanged(u: String) { _uiState.value = _uiState.value.copy(username = u, loginError = null) }
     fun onPasswordChanged(p: String) { _uiState.value = _uiState.value.copy(password = p, loginError = null) }
 
@@ -60,10 +60,21 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             repository.login(s.routerIp, s.username, s.password).fold(
                 onSuccess = {
-                    _uiState.value = _uiState.value.copy(isLoggingIn = false, currentScreen = "devices", password = "")
+                    _uiState.value = _uiState.value.copy(
+                        isLoggingIn = false,
+                        currentScreen = "devices",
+                        password = "",
+                        debugInfo = "Login: ${repository.loginResponse}\n\n${repository.cookieDebug}"
+                    )
                     loadDevices()
                 },
-                onFailure = { _uiState.value = _uiState.value.copy(isLoggingIn = false, loginError = it.message) }
+                onFailure = {
+                    _uiState.value = _uiState.value.copy(
+                        isLoggingIn = false,
+                        loginError = it.message,
+                        debugInfo = "Login failed: ${repository.loginResponse}\n\n${repository.cookieDebug}"
+                    )
+                }
             )
         }
     }
@@ -77,14 +88,21 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
 
             val devices = devicesResult.getOrNull() ?: emptyList()
             val blocked = blockedResult.getOrNull() ?: emptyList()
-            val withStatus = devices.map { it.copy(isBlocked = blocked.any { b -> b.uppercase() == it.mac.uppercase() }) }
+            val withStatus = devices.map {
+                it.copy(isBlocked = blocked.any { b -> b.uppercase() == it.mac.uppercase() })
+            }
 
             _uiState.value = _uiState.value.copy(
                 isLoadingDevices = false,
                 devices = withStatus,
                 blockedMacs = blocked,
                 deviceError = devicesResult.exceptionOrNull()?.message,
-                debugInfo = "Command: ${repository.lastWorkingCommand}\n\nRaw Response:\n${repository.lastRawResponse.take(500)}"
+                debugInfo = buildString {
+                    append("${repository.cookieDebug}\n\n")
+                    append("${repository.loginResponse}\n\n")
+                    append("Command: ${repository.lastWorkingCommand}\n\n")
+                    append("Response:\n${repository.lastRawResponse.take(500)}")
+                }
             )
         }
     }
@@ -94,7 +112,6 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
     fun onBlockConfirmed() {
         val device = _uiState.value.showBlockDialog ?: return
         _uiState.value = _uiState.value.copy(showBlockDialog = null)
-
         viewModelScope.launch {
             repository.blockDevice(device.mac, _uiState.value.blockedMacs).fold(
                 onSuccess = { _uiState.value = _uiState.value.copy(message = it); loadDevices() },
@@ -110,7 +127,6 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
     fun onUnblockConfirmed() {
         val mac = _uiState.value.showUnblockDialog ?: return
         _uiState.value = _uiState.value.copy(showUnblockDialog = null)
-
         viewModelScope.launch {
             repository.unblockDevice(mac, _uiState.value.blockedMacs).fold(
                 onSuccess = { _uiState.value = _uiState.value.copy(message = it); loadDevices() },
