@@ -9,6 +9,7 @@ import kotlinx.coroutines.withContext
 import retrofit2.Response
 import java.io.BufferedReader
 import java.io.FileReader
+import java.net.InetAddress
 
 class RouterRepository(private val storage: SecureStorage) {
 
@@ -80,24 +81,79 @@ class RouterRepository(private val storage: SecureStorage) {
         return try {
             withContext(Dispatchers.IO) {
                 val debug = StringBuilder()
-                debug.appendLine("=== DEVICE SCAN ===")
+                val routerIp = try { storage.getRouterIp() } catch (_: Exception) { "192.168.0.1" }
 
-                // ═══ قراءة ARP فقط ═══
-                val devices = readArp()
-                debug.appendLine("ARP: ${devices.size} devices")
-                for (d in devices) {
+                debug.appendLine("=== DEVICE SCAN ===")
+                debug.appendLine("Router: $routerIp")
+
+                // ═══ الخطوة 1: Ping الراوتر لملء ARP cache ═══
+                debug.appendLine("\n--- Step 1: Ping gateway ---")
+                try {
+                    val gateway = InetAddress.getByName(routerIp)
+                    gateway.isReachable(1000)
+                    debug.appendLine("Pinged gateway: $routerIp")
+                } catch (e: Exception) {
+                    debug.appendLine("Ping gateway error: ${e.message}")
+                }
+
+                // ═══ الخطوة 2: Ping أجهزة شائعة ═══
+                debug.appendLine("\n--- Step 2: Ping subnet ---")
+                val subnet = routerIp.substringBeforeLast(".")
+                val ipsToPing = mutableListOf<String>()
+                for (i in 1..50) ipsToPing.add("$subnet.$i")
+                for (ip in ipsToPing) {
+                    try {
+                        InetAddress.getByName(ip).isReachable(100)
+                    } catch (_: Exception) {}
+                }
+                debug.appendLine("Pinged 50 IPs")
+
+                // ═══ الخطوة 3: اقرأ ARP ═══
+                debug.appendLine("\n--- Step 3: Read ARP ---")
+                val arpDevices = readArp()
+                debug.appendLine("ARP: ${arpDevices.size} devices")
+                for (d in arpDevices) {
                     debug.appendLine("  ${d.ip} | ${d.mac} | ${d.hostname}")
                 }
 
-                if (devices.isNotEmpty()) {
+                if (arpDevices.isNotEmpty()) {
                     lastWorkingCommand = "ARP"
-                    lastRawResponse = "${devices.size} devices"
+                    lastRawResponse = "${arpDevices.size} devices"
                     allCommandsDebug = debug.toString()
-                    Result.success(devices)
-                } else {
-                    allCommandsDebug = debug.toString()
-                    Result.failure(Exception("لم يتم العثور على أجهزة"))
+                    return@withContext Result.success(arpDevices)
                 }
+
+                // ═══ الخطوة 4: Router API ═══
+                debug.appendLine("\n--- Step 4: Router API ---")
+                try {
+                    val api = RetrofitClient.getApi()
+                    val cmds = listOf(
+                        "station_list", "wifi_station_list", "dhcp_list",
+                        "client_list", "connected_devices", "lan_station_list"
+                    )
+                    for (cmd in cmds) {
+                        try {
+                            val r = api.getGenericCmd(cmd = cmd)
+                            val b = r.body()?.string() ?: ""
+                            debug.appendLine("[$cmd] -> ${b.take(100)}")
+                            if (b.length > 30 && !b.contains("\"\":\"$cmd\"")) {
+                                val devices = parseDevices(b)
+                                if (devices.isNotEmpty()) {
+                                    lastWorkingCommand = cmd
+                                    allCommandsDebug = debug.toString()
+                                    return@withContext Result.success(devices)
+                                }
+                            }
+                        } catch (e: Exception) {
+                            debug.appendLine("[$cmd] error: ${e.message}")
+                        }
+                    }
+                } catch (e: Exception) {
+                    debug.appendLine("API error: ${e.message}")
+                }
+
+                allCommandsDebug = debug.toString()
+                Result.failure(Exception("لم يتم العثور على أجهزة"))
             }
         } catch (e: Exception) {
             Result.failure(Exception("فشل: ${e.message}"))
@@ -125,6 +181,16 @@ class RouterRepository(private val storage: SecureStorage) {
                 }
 
                 try {
+                    val routerIp = storage.getRouterIp()
+                    val subnet = routerIp.substringBeforeLast(".")
+                    debug.appendLine("\nPinging subnet...")
+                    for (i in 1..20) {
+                        try { InetAddress.getByName("$subnet.$i").isReachable(100) } catch (_: Exception) {}
+                    }
+                    debug.appendLine("Ping done")
+                } catch (_: Exception) {}
+
+                try {
                     val arp = readArp()
                     debug.appendLine("\nARP: ${arp.size} devices")
                     for (d in arp) debug.appendLine("  ${d.ip} | ${d.mac}")
@@ -139,7 +205,6 @@ class RouterRepository(private val storage: SecureStorage) {
         }
     }
 
-    // ═══ قراءة ARP table — آمن بالكامل ═══
     private fun readArp(): List<Device> {
         val devices = mutableListOf<Device>()
         var reader: BufferedReader? = null
@@ -252,5 +317,18 @@ class RouterRepository(private val storage: SecureStorage) {
             cookieDebug = "Cookies: ${RetrofitClient.getCookiesString()}"
             debug.appendLine(cookieDebug)
         } catch (_: Exception) {}
+    }
+
+    private fun parseDevices(raw: String): List<Device> {
+        try {
+            val macPattern = Regex("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}")
+            val ipPattern = Regex("(\\d{1,3}\\.){3}\\d{1,3}")
+            val macs = macPattern.findAll(raw).map { it.value.uppercase() }.distinct().toList()
+            if (macs.isEmpty()) return emptyList()
+            val ips = ipPattern.findAll(raw).map { it.value }.toList()
+            return macs.mapIndexed { i, mac ->
+                Device(mac = mac, ip = ips.getOrNull(i) ?: "", hostname = "جهاز ${i + 1}", connectionType = "WiFi")
+            }
+        } catch (_: Exception) { return emptyList() }
     }
 }
