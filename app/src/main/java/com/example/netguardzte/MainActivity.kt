@@ -43,7 +43,7 @@ class MainActivity : ComponentActivity() {
 
                 Scaffold(
                     snackbarHost = { SnackbarHost(snackbarHostState) }
-                ) { padding ->
+                ) {
                     Spacer(Modifier.height(0.dp))
 
                     when (s.currentScreen) {
@@ -66,6 +66,7 @@ class MainActivity : ComponentActivity() {
                             showBlockDialog = s.showBlockDialog,
                             showDebugInfo = s.showDebugInfo,
                             debugInfo = s.debugInfo,
+                            isTestingRouter = s.isTestingRouter,
                             onRefresh = { vm.loadDevices() },
                             onBlock = { vm.onBlockClicked(it) },
                             onUnblock = { vm.onUnblockClicked(it) },
@@ -73,7 +74,8 @@ class MainActivity : ComponentActivity() {
                             onBlockCancelled = { vm.onBlockCancelled() },
                             onNavigateToBlocked = { vm.navigateTo("blocked") },
                             onNavigateToSettings = { vm.navigateTo("settings") },
-                            onToggleDebug = { vm.toggleDebugInfo() }
+                            onToggleDebug = { vm.toggleDebugInfo() },
+                            onTestRouter = { vm.testRouter() }
                         )
 
                         "blocked" -> BlockedScreen(
