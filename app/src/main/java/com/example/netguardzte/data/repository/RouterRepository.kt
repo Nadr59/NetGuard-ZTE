@@ -35,7 +35,6 @@ class RouterRepository(private val storage: SecureStorage) {
         try {
             RetrofitClient.reset()
             RetrofitClient.setRouterAddress(routerIp)
-
             val api = RetrofitClient.getApi()
             val debug = StringBuilder()
 
@@ -73,7 +72,6 @@ class RouterRepository(private val storage: SecureStorage) {
 
             debug.appendLine("Login code: ${response.code()}")
             debug.appendLine("Login body: ${body.take(200)}")
-
             readCookiesFromResponse(response, debug)
             cookieDebug = "Cookies: ${RetrofitClient.getCookiesString()}"
 
@@ -135,11 +133,9 @@ class RouterRepository(private val storage: SecureStorage) {
         if (setCookies.isNotEmpty()) {
             debug.appendLine("Set-Cookie headers: ${setCookies.size}")
             for (cookieHeader in setCookies) {
-                debug.appendLine("  Cookie raw: ${cookieHeader.take(80)}")
                 val parts = cookieHeader.split(";")[0].split("=", limit = 2)
                 if (parts.size == 2) {
                     RetrofitClient.setSessionCookie(parts[0].trim(), parts[1].trim())
-                    debug.appendLine("  Saved cookie: ${parts[0].trim()}=${parts[1].trim().take(20)}")
                 }
             }
         }
@@ -153,13 +149,13 @@ class RouterRepository(private val storage: SecureStorage) {
 
             cookieDebug = "Cookies: ${RetrofitClient.getCookiesString()}"
             debug.appendLine("=== DEVICE SCAN ===")
-            debug.appendLine("Cookies: ${RetrofitClient.getCookiesString()}")
 
             val commands = listOf(
                 "station_list", "wifi_station_list", "wifi_client_list",
                 "dhcp_list", "client_list", "lan_station_list",
                 "active_user_list", "connected_devices", "wlan_station_list",
-                "multi_stations_list", "user_list", "station_list_5g", "wds_station_list"
+                "multi_stations_list", "user_list", "station_list_5g",
+                "wds_station_list", "Language"
             )
 
             for (cmdName in commands) {
@@ -170,7 +166,6 @@ class RouterRepository(private val storage: SecureStorage) {
                     } else {
                         "HTTP ${response.code()}"
                     }
-
                     debug.appendLine("\n[$cmdName] -> ${response.code()}: ${rawBody.take(150)}")
 
                     if (response.isSuccessful && hasRealData(rawBody, cmdName)) {
@@ -182,10 +177,6 @@ class RouterRepository(private val storage: SecureStorage) {
                             allCommandsDebug = debug.toString()
                             return@withContext Result.success(devices)
                         }
-                    } else if (response.code() == 401) {
-                        debug.appendLine("  -> 401! Re-logging in...")
-                        autoRelogin()
-                        debug.appendLine("  -> Done. Cookies: ${RetrofitClient.getCookiesString()}")
                     }
                 } catch (e: Exception) {
                     debug.appendLine("[$cmdName] -> ERROR: ${e.message}")
@@ -200,26 +191,24 @@ class RouterRepository(private val storage: SecureStorage) {
                 } else {
                     "HTTP ${postResponse.code()}"
                 }
-                debug.appendLine("[POST station_list] -> ${postResponse.code()}: ${postBody.take(150)}")
+                debug.appendLine("[POST] -> ${postResponse.code()}: ${postBody.take(150)}")
 
                 if (postResponse.isSuccessful && hasRealData(postBody, "station_list")) {
                     lastRawResponse = postBody
                     lastWorkingCommand = "POST station_list"
                     val devices = tryAllParsingMethods(postBody)
                     if (devices.isNotEmpty()) {
-                        debug.appendLine("  FOUND ${devices.size} devices via POST!")
                         allCommandsDebug = debug.toString()
                         return@withContext Result.success(devices)
                     }
                 }
             } catch (e: Exception) {
-                debug.appendLine("[POST station_list] -> ERROR: ${e.message}")
+                debug.appendLine("[POST] -> ERROR: ${e.message}")
             }
 
-            debug.appendLine("\n=== TRY HTML SCRAPING ===")
-            val htmlDevices = scrapeHtmlForDevices(api, debug)
+            debug.appendLine("\n=== TRY HTML + JS FILES ===")
+            val htmlDevices = scrapeHtmlAndJsFiles(api, debug)
             if (htmlDevices.isNotEmpty()) {
-                debug.appendLine("  FOUND ${htmlDevices.size} devices in HTML!")
                 allCommandsDebug = debug.toString()
                 return@withContext Result.success(htmlDevices)
             }
@@ -230,16 +219,18 @@ class RouterRepository(private val storage: SecureStorage) {
             allCommandsDebug = debug.toString()
 
             if (lastRawResponse.isNotBlank()) {
-                Result.failure(Exception("لم يتم العثور على أجهزة\nالأمر: $lastWorkingCommand\nالاستجابة: ${lastRawResponse.take(200)}"))
+                Result.failure(Exception("لم يتم العثور على أجهزة\nالأمر: $lastWorkingCommand\n${lastRawResponse.take(200)}"))
             } else {
                 Result.failure(Exception("لا توجد استجابة من الراوتر"))
             }
         } catch (e: Exception) {
-            Result.failure(Exception("فشل جلب الأجهزة: ${e.message}"))
+            Result.failure(Exception("فشل: ${e.message}"))
         }
     }
 
-    private suspend fun scrapeHtmlForDevices(api: ZteRouterApi, debug: StringBuilder): List<Device> {
+    private suspend fun scrapeHtmlAndJsFiles(api: ZteRouterApi, debug: StringBuilder): List<Device> {
+        val allJsCommands = mutableListOf<String>()
+
         val pages: List<Pair<String, suspend () -> Response<ResponseBody>>> = listOf(
             "main page" to suspend { api.getMainPage() },
             "status page" to suspend { api.getStatusPage() },
@@ -253,33 +244,46 @@ class RouterRepository(private val storage: SecureStorage) {
                     val html = response.body()?.string() ?: ""
                     debug.appendLine("[$name] -> ${response.code()}: ${html.length} chars")
 
-                    if (html.length > 100) {
-                        val devices = extractDevicesFromHtml(html)
-                        if (devices.isNotEmpty()) {
-                            debug.appendLine("  Found ${devices.size} devices in HTML!")
-                            lastRawResponse = html.take(500)
-                            lastWorkingCommand = "HTML $name"
-                            return devices
-                        }
+                    if (html.length < 100) continue
 
-                        val jsCommands = extractJsCommands(html)
-                        debug.appendLine("  Found ${jsCommands.size} JS commands")
-                        for (cmd in jsCommands) {
-                            try {
-                                val r = api.getGenericCmd(cmd = cmd)
-                                val b = r.body()?.string() ?: ""
-                                debug.appendLine("  JS cmd [$cmd]: ${r.code()} ${b.take(100)}")
-                                if (hasRealData(b, cmd)) {
-                                    val d = tryAllParsingMethods(b)
-                                    if (d.isNotEmpty()) {
-                                        lastRawResponse = b
-                                        lastWorkingCommand = "JS $cmd"
-                                        return d
-                                    }
+                    val devices = extractDevicesFromHtml(html)
+                    if (devices.isNotEmpty()) {
+                        lastRawResponse = html.take(500)
+                        lastWorkingCommand = "HTML $name"
+                        return devices
+                    }
+
+                    val inlineCmds = extractJsCommands(html)
+                    debug.appendLine("  Inline JS cmds: ${inlineCmds.joinToString(", ")}")
+                    allJsCommands.addAll(inlineCmds)
+
+                    val jsFiles = extractJsFileUrls(html)
+                    debug.appendLine("  External JS files: ${jsFiles.size}")
+                    for (jsUrl in jsFiles) {
+                        try {
+                            val fullUrl = if (jsUrl.startsWith("http")) jsUrl
+                            else "http://${storage.getRouterIp()}${if (jsUrl.startsWith("/")) "" else "/"}$jsUrl"
+                            val jsResponse = api.getGenericCmd(cmd = "__fetch_js__")
+                            debug.appendLine("  [Fetching JS: $fullUrl]")
+
+                            val jsClient = RetrofitClient.getApi()
+                            val jsPage = jsClient.getMainPage()
+                            val jsContent = fetchUrl(fullUrl)
+                            if (jsContent.isNotBlank()) {
+                                debug.appendLine("    JS content: ${jsContent.length} chars")
+                                val jsCmds = extractJsCommands(jsContent)
+                                debug.appendLine("    JS cmds found: ${jsCmds.joinToString(", ")}")
+                                allJsCommands.addAll(jsCmds)
+
+                                val jsDevices = extractDevicesFromHtml(jsContent)
+                                if (jsDevices.isNotEmpty()) {
+                                    lastRawResponse = jsContent.take(500)
+                                    lastWorkingCommand = "JS file $jsUrl"
+                                    return jsDevices
                                 }
-                            } catch (e: Exception) {
-                                debug.appendLine("  JS cmd [$cmd] error: ${e.message}")
                             }
+                        } catch (e: Exception) {
+                            debug.appendLine("  JS fetch error [$jsUrl]: ${e.message}")
                         }
                     }
                 }
@@ -287,7 +291,54 @@ class RouterRepository(private val storage: SecureStorage) {
                 debug.appendLine("[$name] -> ERROR: ${e.message}")
             }
         }
+
+        val uniqueCmds = allJsCommands.distinct().filter { it.isNotBlank() }
+        debug.appendLine("\n=== TRY ${uniqueCmds.size} JS COMMANDS ===")
+
+        for (cmd in uniqueCmds) {
+            try {
+                val r = api.getGenericCmd(cmd = cmd)
+                val b = r.body()?.string() ?: ""
+                debug.appendLine("  [$cmd] -> ${r.code()}: ${b.take(150)}")
+                if (hasRealData(b, cmd)) {
+                    lastRawResponse = b
+                    lastWorkingCommand = "JS $cmd"
+                    val d = tryAllParsingMethods(b)
+                    if (d.isNotEmpty()) {
+                        debug.appendLine("  FOUND ${d.size} devices!")
+                        return d
+                    }
+                }
+            } catch (e: Exception) {
+                debug.appendLine("  [$cmd] -> ERROR: ${e.message}")
+            }
+        }
+
         return emptyList()
+    }
+
+    private fun extractJsFileUrls(html: String): List<String> {
+        val urls = mutableListOf<String>()
+        val scriptPattern = Regex("""<script[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+        for (match in scriptPattern.findAll(html)) {
+            val url = match.groupValues[1]
+            if (url.isNotBlank() && url !in urls) urls.add(url)
+        }
+        return urls
+    }
+
+    private fun fetchUrl(url: String): String {
+        return try {
+            val client = okhttp3.OkHttpClient.Builder()
+                .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
+            val request = okhttp3.Request.Builder().url(url).build()
+            val response = client.newCall(request).execute()
+            response.body?.string() ?: ""
+        } catch (_: Exception) {
+            ""
+        }
     }
 
     private fun extractJsCommands(html: String): List<String> {
@@ -295,12 +346,20 @@ class RouterRepository(private val storage: SecureStorage) {
         val patterns = listOf(
             Regex("""cmd[=:]\s*["']([^"']+)["']"""),
             Regex("""goform_get_cmd_process\?cmd=([^"&\s]+)"""),
-            Regex("""getAjaxData\([^,]*["']([^"']+)["']""")
+            Regex("""getAjaxData\([^,]*["']([^"']+)["']"""),
+            Regex("""\.get\([^)]*cmd[=:]\s*["']([^"']+)["']"""),
+            Regex("""url[=:]\s*["'][^"']*cmd=([^"&\s]+)["']"""),
+            Regex("""["']([a-zA-Z_]+(?:_list|_info|_status|_count|_data|_setting|_config))["']"""),
+            Regex("""\?cmd=([a-zA-Z0-9_,]+)"""),
+            Regex("""CMD_TYPE\s*[=:]\s*["']([^"']+)["']"""),
+            Regex("""var\s+\w+\s*=\s*["']([a-zA-Z_]+(?:station|client|device|user|dhcp|wifi|wlan|connected)[a-zA-Z_]*)["']""")
         )
         for (pattern in patterns) {
             for (match in pattern.findAll(html)) {
                 val cmd = match.groupValues[1]
-                if (cmd.isNotBlank() && cmd !in commands) commands.add(cmd)
+                if (cmd.isNotBlank() && cmd !in commands && cmd.length > 3) {
+                    commands.add(cmd)
+                }
             }
         }
         return commands
@@ -314,11 +373,9 @@ class RouterRepository(private val storage: SecureStorage) {
         val routerMacs = setOf("FF:FF:FF:FF:FF:FF", "00:00:00:00:00:00")
         val clientMacs = macs.filter { it !in routerMacs }
         val ips = ipPattern.findAll(html).map { it.value }.toList()
-        val devices = mutableListOf<Device>()
-        for ((i, mac) in clientMacs.withIndex()) {
-            devices.add(Device(mac = mac, ip = ips.getOrNull(i) ?: "", hostname = "جهاز ${i + 1}", connectionType = "WiFi"))
+        return clientMacs.mapIndexed { i, mac ->
+            Device(mac = mac, ip = ips.getOrNull(i) ?: "", hostname = "جهاز ${i + 1}", connectionType = "WiFi")
         }
-        return devices
     }
 
     private suspend fun reloginAndRetry(api: ZteRouterApi, debug: StringBuilder) {
@@ -444,11 +501,7 @@ class RouterRepository(private val storage: SecureStorage) {
     private fun getFieldStr(obj: JsonObject, field: String): String {
         return try {
             val el = obj.get(field) ?: return ""
-            when {
-                el.isJsonNull -> ""
-                el.isJsonPrimitive -> el.asString
-                else -> el.toString()
-            }
+            when { el.isJsonNull -> ""; el.isJsonPrimitive -> el.asString; else -> el.toString() }
         } catch (_: Exception) { "" }
     }
 
@@ -472,16 +525,10 @@ class RouterRepository(private val storage: SecureStorage) {
             val api = RetrofitClient.getApi()
             val newList = (currentBlockedList + mac.uppercase()).joinToString(";")
             val response = api.setMacFilter(macList = newList)
-            if (response.isSuccessful) {
-                Result.success("تم حظر الجهاز")
-            } else if (response.code() == 401) {
-                autoRelogin()
-                val retry = RetrofitClient.getApi().setMacFilter(macList = newList)
-                if (retry.isSuccessful) Result.success("تم الحظر") else Result.failure(Exception("فشل"))
-            } else {
-                Result.failure(Exception("فشل الحظر: ${response.code()}"))
-            }
-        } catch (e: Exception) { Result.failure(Exception("فشل الحظر: ${e.message}")) }
+            if (response.isSuccessful) Result.success("تم حظر الجهاز")
+            else if (response.code() == 401) { autoRelogin(); val r = RetrofitClient.getApi().setMacFilter(macList = newList); if (r.isSuccessful) Result.success("تم الحظر") else Result.failure(Exception("فشل")) }
+            else Result.failure(Exception("فشل: ${response.code()}"))
+        } catch (e: Exception) { Result.failure(e) }
     }
 
     suspend fun unblockDevice(mac: String, currentBlockedList: List<String>): Result<String> = withContext(Dispatchers.IO) {
@@ -489,17 +536,10 @@ class RouterRepository(private val storage: SecureStorage) {
             val api = RetrofitClient.getApi()
             val newList = currentBlockedList.filter { it.uppercase() != mac.uppercase() }.joinToString(";")
             val response = if (newList.isEmpty()) api.disableMacFilter() else api.setMacFilter(macList = newList)
-            if (response.isSuccessful) {
-                Result.success("تم إلغاء الحظر")
-            } else if (response.code() == 401) {
-                autoRelogin()
-                val ra = RetrofitClient.getApi()
-                val r = if (newList.isEmpty()) ra.disableMacFilter() else ra.setMacFilter(macList = newList)
-                if (r.isSuccessful) Result.success("تم إلغاء الحظر") else Result.failure(Exception("فشل"))
-            } else {
-                Result.failure(Exception("فشل إلغاء الحظر: ${response.code()}"))
-            }
-        } catch (e: Exception) { Result.failure(Exception("فشل إلغاء الحظر: ${e.message}")) }
+            if (response.isSuccessful) Result.success("تم إلغاء الحظر")
+            else if (response.code() == 401) { autoRelogin(); val ra = RetrofitClient.getApi(); val r = if (newList.isEmpty()) ra.disableMacFilter() else ra.setMacFilter(macList = newList); if (r.isSuccessful) Result.success("تم إلغاء الحظر") else Result.failure(Exception("فشل")) }
+            else Result.failure(Exception("فشل: ${response.code()}"))
+        } catch (e: Exception) { Result.failure(e) }
     }
 
     suspend fun getBlockedMacs(): Result<List<String>> = withContext(Dispatchers.IO) {
@@ -526,9 +566,7 @@ class RouterRepository(private val storage: SecureStorage) {
             val setCookies = response.headers().values("Set-Cookie")
             for (cookieHeader in setCookies) {
                 val parts = cookieHeader.split(";")[0].split("=", limit = 2)
-                if (parts.size == 2) {
-                    RetrofitClient.setSessionCookie(parts[0].trim(), parts[1].trim())
-                }
+                if (parts.size == 2) RetrofitClient.setSessionCookie(parts[0].trim(), parts[1].trim())
             }
         } catch (_: Exception) {}
     }
