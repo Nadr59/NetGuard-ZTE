@@ -53,6 +53,7 @@ fun DevicesScreen(
     showBlockDialog: Device?,
     showDebugInfo: Boolean,
     debugInfo: String,
+    isTestingRouter: Boolean,
     onRefresh: () -> Unit,
     onBlock: (Device) -> Unit,
     onUnblock: (String) -> Unit,
@@ -60,13 +61,17 @@ fun DevicesScreen(
     onBlockCancelled: () -> Unit,
     onNavigateToBlocked: () -> Unit,
     onNavigateToSettings: () -> Unit,
-    onToggleDebug: () -> Unit
+    onToggleDebug: () -> Unit,
+    onTestRouter: () -> Unit
 ) {
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("الأجهزة المتصلة", fontWeight = FontWeight.Bold) },
                 actions = {
+                    IconButton(onClick = onTestRouter) {
+                        Text("🧪", fontSize = 18.sp)
+                    }
                     IconButton(onClick = onToggleDebug) {
                         Text(
                             text = if (showDebugInfo) "🔍" else "🔧",
@@ -93,7 +98,6 @@ fun DevicesScreen(
                 .padding(padding)
         ) {
             when {
-                // ═══ حالة التحميل ═══
                 isLoading -> {
                     Column(
                         Modifier.fillMaxSize(),
@@ -106,7 +110,6 @@ fun DevicesScreen(
                     }
                 }
 
-                // ═══ حالة الخطأ — مع عرض كامل للتشخيص ═══
                 error != null -> {
                     Column(
                         Modifier
@@ -116,7 +119,6 @@ fun DevicesScreen(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Spacer(Modifier.height(32.dp))
-
                         Text("⚠️", fontSize = 48.sp)
                         Spacer(Modifier.height(12.dp))
                         Text(
@@ -129,8 +131,12 @@ fun DevicesScreen(
                         Button(onClick = onRefresh) {
                             Text("إعادة المحاولة")
                         }
-
-                        // ═══ معلومات التشخيص الكاملة ═══
+                        if (isTestingRouter) {
+                            Spacer(Modifier.height(16.dp))
+                            CircularProgressIndicator()
+                            Spacer(Modifier.height(8.dp))
+                            Text("جاري اختبار الراوتر...")
+                        }
                         if (showDebugInfo && debugInfo.isNotBlank()) {
                             Spacer(Modifier.height(16.dp))
                             DebugCard(debugInfo)
@@ -138,7 +144,6 @@ fun DevicesScreen(
                     }
                 }
 
-                // ═══ لا توجد أجهزة ═══
                 devices.isEmpty() -> {
                     Column(
                         Modifier
@@ -148,7 +153,6 @@ fun DevicesScreen(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Spacer(Modifier.height(48.dp))
-
                         Text("📡", fontSize = 48.sp)
                         Spacer(Modifier.height(12.dp))
                         Text(
@@ -160,8 +164,12 @@ fun DevicesScreen(
                         Button(onClick = onRefresh) {
                             Text("تحديث")
                         }
-
-                        // ═══ معلومات التشخيص ═══
+                        if (isTestingRouter) {
+                            Spacer(Modifier.height(16.dp))
+                            CircularProgressIndicator()
+                            Spacer(Modifier.height(8.dp))
+                            Text("جاري اختبار الراوتر...")
+                        }
                         if (showDebugInfo && debugInfo.isNotBlank()) {
                             Spacer(Modifier.height(16.dp))
                             DebugCard(debugInfo)
@@ -169,19 +177,24 @@ fun DevicesScreen(
                     }
                 }
 
-                // ═══ قائمة الأجهزة ═══
                 else -> {
                     LazyColumn(
                         contentPadding = PaddingValues(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         item {
-                            Text(
-                                text = "${devices.size} جهاز متصل",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
-                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 4.dp, bottom = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${devices.size} جهاز متصل",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
 
                         items(items = devices, key = { it.mac }) { device ->
@@ -192,7 +205,21 @@ fun DevicesScreen(
                             )
                         }
 
-                        // ═══ معلومات التشخيص في أسفل القائمة ═══
+                        if (isTestingRouter) {
+                            item {
+                                Spacer(Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("جاري اختبار الراوتر...")
+                                }
+                            }
+                        }
+
                         if (showDebugInfo && debugInfo.isNotBlank()) {
                             item {
                                 Spacer(Modifier.height(8.dp))
@@ -207,7 +234,6 @@ fun DevicesScreen(
         }
     }
 
-    // ═══ مربع حوار تأكيد الحظر ═══
     showBlockDialog?.let { device ->
         AlertDialog(
             onDismissRequest = onBlockCancelled,
@@ -244,7 +270,6 @@ fun DevicesScreen(
     }
 }
 
-// ═══ بطاقة التشخيص القابلة للتمرير ═══
 @Composable
 private fun DebugCard(debugInfo: String) {
     Card(
@@ -255,13 +280,11 @@ private fun DebugCard(debugInfo: String) {
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(
-                "🔍 Debug Info (اسحب لأسفل للقراءة)",
+                "🔍 Debug Info (اسحب لأسفل)",
                 fontWeight = FontWeight.Bold,
                 style = MaterialTheme.typography.titleSmall
             )
             Spacer(Modifier.height(8.dp))
-
-            // ═══ نص قابل للتمرير ═══
             Text(
                 text = debugInfo,
                 style = MaterialTheme.typography.labelSmall,
