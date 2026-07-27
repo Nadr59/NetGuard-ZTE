@@ -607,6 +607,120 @@ class RouterRepository(private val storage: SecureStorage) {
         storage.setLoggedIn(false)
         RetrofitClient.reset()
     }
+    suspend fun captureWebRequest(): Result<String> {
+    return try {
+        withContext(Dispatchers.IO) {
+            val api = RetrofitClient.getApi()
+            val routerIp = storage.getRouterIp()
+            val cookies = RetrofitClient.getCookiesString()
+            val debug = StringBuilder()
+
+            debug.appendLine("=== CAPTURE WEB REQUEST INFO ===")
+
+            // 1. احصل على RD parameter
+            try {
+                val rdResponse = api.getGenericCmd(cmd = "RD")
+                val rdBody = rdResponse.body()?.string() ?: ""
+                debug.appendLine("RD: $rdBody")
+            } catch (e: Exception) {
+                debug.appendLine("RD error: ${e.message}")
+            }
+
+            // 2. احصل على wa_inner_version و cr_version
+            try {
+                val verResponse = api.getGenericCmd(
+                    cmd = "wa_inner_version,cr_version"
+                )
+                val verBody = verResponse.body()?.string() ?: ""
+                debug.appendLine("Versions: $verBody")
+            } catch (e: Exception) {
+                debug.appendLine("Versions error: ${e.message}")
+            }
+
+            // 3. اطبع الكوكيز الحالية
+            debug.appendLine("Cookies: $cookies")
+
+            // 4. ابحث عن ملفات تحتوي cookWithRequest
+            debug.appendLine("\n=== LOOKING FOR AUTH FILES ===")
+            val authFiles = listOf(
+                "js/crypto.js",
+                "js/md5.js",
+                "js/security.js",
+                "js/auth.js",
+                "js/encrypt.js",
+                "js/hash.js",
+                "js/token.js",
+                "js/main.js",
+                "js/app.js",
+                "js/index.js",
+                "js/lib.js",
+                "js/base.js",
+                "js/common/base64.js",
+                "js/utils/crypto.js",
+                "js/common/crypto.js"
+            )
+
+            for (file in authFiles) {
+                try {
+                    val content = fetchUrl(
+                        "http://$routerIp/$file",
+                        cookies
+                    )
+                    if (content.length > 50 &&
+                        !content.contains("Document Error")
+                    ) {
+                        debug.appendLine("\n✅ Found: $file (${content.length} chars)")
+
+                        // ابحث عن cookWithRequest
+                        if (content.contains("cookWithRequest") ||
+                            content.contains("rd0") ||
+                            content.contains("rd1") ||
+                            content.contains("AD")
+                        ) {
+                            debug.appendLine(">>> CONTAINS AUTH CODE! <<<")
+                            debug.appendLine(content)
+                        } else {
+                            debug.appendLine(content.take(2000))
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+
+            // 5. ابحث في index.html عن الملفات
+            debug.appendLine("\n=== INDEX.HTML SCRIPTS ===")
+            try {
+                val index = fetchUrl(
+                    "http://$routerIp/index.html",
+                    cookies
+                )
+                val scriptPattern = Regex(
+                    """src\s*=\s*["']([^"']+\.js[^"']*)["']"""
+                )
+                for (m in scriptPattern.findAll(index)) {
+                    val src = m.groupValues[1]
+                    debug.appendLine("Script: $src")
+                }
+            } catch (_: Exception) {}
+
+            // 6. ابحث في main.js
+            debug.appendLine("\n=== MAIN.JS ===")
+            try {
+                val mainJs = fetchUrl(
+                    "http://$routerIp/js/main.js",
+                    cookies
+                )
+                debug.appendLine("main.js (${mainJs.length} chars)")
+                debug.appendLine(mainJs)
+            } catch (_: Exception) {}
+
+            allCommandsDebug = debug.toString()
+            lastRawResponse = debug.toString()
+            Result.success(debug.toString())
+        }
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+    }
 
     // ═══════════════════════════════════════════
     // أدوات مساعدة لقراءة ARP والأجهزة
