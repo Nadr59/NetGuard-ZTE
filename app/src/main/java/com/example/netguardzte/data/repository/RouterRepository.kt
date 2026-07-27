@@ -39,10 +39,7 @@ class RouterRepository(private val storage: SecureStorage) {
 
     private fun fetchUrl(url: String, cookies: String): String {
         return try {
-            val request = Request.Builder()
-                .url(url)
-                .addHeader("Cookie", cookies)
-                .build()
+            val request = Request.Builder().url(url).addHeader("Cookie", cookies).build()
             httpClient.newCall(request).execute().body?.string() ?: ""
         } catch (_: Exception) { "" }
     }
@@ -138,7 +135,7 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     // ═══════════════════════════════════════════
-    // حظر — اكتشاف من RequireJS modules
+    // حظر — اكتشاف من service.js
     // ═══════════════════════════════════════════
     suspend fun blockDevice(mac: String, currentBlockedList: List<String>): Result<String> {
         return try {
@@ -151,130 +148,141 @@ class RouterRepository(private val storage: SecureStorage) {
 
                 debug.appendLine("=== BLOCK $mac ===")
 
-                // ═══ الخطوة 1: اسحب index.html واستخرج RequireJS modules ═══
-                debug.appendLine("\n=== FIND MODULES ===")
-                val allJsContent = StringBuilder()
-
-                // اسحب index.html أولاً
-                val indexHtml = fetchUrl("http://$routerIp/index.html", cookies)
-                debug.appendLine("index.html: ${indexHtml.length} chars")
-                allJsContent.appendLine(indexHtml)
-
-                // استخرج مسارات الملفات من index.html
-                val scriptPattern = Regex("""src=['"]([^'"]+\.js[^'"]*)['"]""")
-                val scripts = scriptPattern.findAll(indexHtml).map { it.groupValues[1] }.toList()
-                debug.appendLine("Scripts found: ${scripts.joinToString(", ")}")
-
-                // استخرج data-main من RequireJS
-                val dataMainPattern = Regex("""data-main=['"]([^'"]+)['"]""")
-                val dataMain = dataMainPattern.find(indexHtml)?.groupValues?.get(1)
-                debug.appendLine("RequireJS data-main: $dataMain")
-
-                // اسحب ملفات JS المكتشفة
-                for (script in scripts) {
-                    val url = if (script.startsWith("http")) script else "http://$routerIp/$script"
-                    val content = fetchUrl(url, cookies)
-                    if (content.length > 50) {
-                        debug.appendLine("  $script -> ${content.length} chars")
-                        allJsContent.appendLine(content)
-                    }
-                }
-
-                // ═══ اسحب RequireJS modules الشائعة ═══
-                val modulePaths = listOf(
-                    // config modules
-                    "config/config.js", "config/menu.js", "config/wifiConfig.js",
-                    "config/serverConfig.js", "config/settings.js",
-                    // status modules
-                    "status/statusBar.js", "status/status.js",
-                    // wifi/wlan modules
-                    "wifi/wifi.js", "wifi/macFilter.js", "wifi/wifiSettings.js",
-                    "wifi/wifiSecurity.js", "wifi/advance.js",
-                    "wlan/wlan.js", "wlan/macFilter.js", "wlan/wlanSettings.js",
-                    "wlan/security.js", "wlan/advance.js",
-                    "wlanMultiMacFilter/wlanMultiMacFilter.js",
-                    "macFilter/macFilter.js",
-                    "mac_filter/mac_filter.js",
-                    // settings modules
-                    "settings/wifi.js", "settings/wlan.js", "settings/security.js",
-                    "settings/advance.js", "settings/macFilter.js",
-                    // security modules
-                    "security/security.js", "security/macFilter.js",
-                    // access control
-                    "accessControl/accessControl.js", "access_control/access_control.js",
-                    // other common modules
-                    "router.js", "login.js", "language.js", "logout.js",
-                    "firewall/firewall.js", "parentalControl/parentalControl.js",
-                    // tmpl templates
-                    "../tmpl/wifi.html", "../tmpl/wlan.html",
-                    "../tmpl/macFilter.html", "../tmpl/security.html",
-                    "../tmpl/advance.html", "../tmpl/settings.html",
-                    "../tmpl/accessControl.html", "../tmpl/parental.html"
+                // ═══ اسحب service.js ← هنا كل goformIds ═══
+                debug.appendLine("\n=== FETCH SERVICE.JS ===")
+                val serviceFiles = listOf(
+                    "js/service.js",
+                    "js/service/service.js",
+                    "js/services/service.js",
+                    "js/api.js",
+                    "js/service/api.js",
+                    "js/common.js",
+                    "js/util.js",
+                    "js/utils.js",
+                    "js/service/utilService.js"
                 )
 
-                for (mod in modulePaths) {
-                    val url = "http://$routerIp/js/$mod"
-                    val content = fetchUrl(url, cookies)
+                val allContent = StringBuilder()
+
+                // اسحب config.js أولاً (فيه إعدادات مهمة)
+                val configJs = fetchUrl("http://$routerIp/js/config/config.js", cookies)
+                if (configJs.length > 100) {
+                    debug.appendLine("config.js: ${configJs.length} chars")
+                    debug.appendLine("Full config.js:\n$configJs")
+                    allContent.appendLine(configJs)
+                }
+
+                // ابحث عن service.js
+                for (sf in serviceFiles) {
+                    val content = fetchUrl("http://$routerIp/$sf", cookies)
                     if (content.length > 100) {
-                        debug.appendLine("  js/$mod -> ${content.length} chars")
-                        debug.appendLine("  Preview: ${content.take(200)}")
-                        allJsContent.appendLine(content)
+                        debug.appendLine("\n$sf: ${content.length} chars")
+                        debug.appendLine("Full content:\n$content")
+                        allContent.appendLine(content)
                     }
                 }
 
-                // ═══ الخطوة 2: حلل كل المحتوى ═══
+                // ابحث عن service في index.html
+                val indexHtml = fetchUrl("http://$routerIp/index.html", cookies)
+                // استخرج كل data-requires أو module paths
+                val requirePattern = Regex("""['"]([^'"]*service[^'"]*)['"]""", RegexOption.IGNORE_CASE)
+                for (m in requirePattern.findAll(indexHtml)) {
+                    val path = m.groupValues[1]
+                    if (path.endsWith(".js") || (!path.contains(" ") && path.length < 50)) {
+                        val url = if (path.startsWith("http")) path else "http://$routerIp/js/$path"
+                        val content = fetchUrl(url, cookies)
+                        if (content.length > 100) {
+                            debug.appendLine("\nDiscovered: $path -> ${content.length} chars")
+                            debug.appendLine("Content:\n$content")
+                            allContent.appendLine(content)
+                        }
+                    }
+                }
+
+                // ابحث عن service في main.js
+                val mainJs = fetchUrl("http://$routerIp/js/main.js", cookies)
+                val mainRequires = Regex("""['"]([^'"]+)['"]""").findAll(mainJs)
+                for (m in mainRequires) {
+                    val path = m.groupValues[1]
+                    if (path.contains("service") || path.contains("api") || path.contains("util")) {
+                        val url = "http://$routerIp/js/$path.js"
+                        val content = fetchUrl(url, cookies)
+                        if (content.length > 100) {
+                            debug.appendLine("\nFrom main.js: $path -> ${content.length} chars")
+                            debug.appendLine("Content:\n$content")
+                            allContent.appendLine(content)
+                        }
+                    }
+                }
+
+                // اسحب statusBar.js كامل (فيه أزرار الحظر)
+                val statusBarJs = fetchUrl("http://$routerIp/js/status/statusBar.js", cookies)
+                if (statusBarJs.length > 100) {
+                    debug.appendLine("\nstatusBar.js: ${statusBarJs.length} chars")
+                    debug.appendLine("Full content:\n$statusBarJs")
+                    allContent.appendLine(statusBarJs)
+                }
+
+                // ابحث عن service في كل الملفات المكتشفة
+                val foundPaths = mutableSetOf<String>()
+                for (m in Regex("""['"]([a-zA-Z/._-]*service[a-zA-Z/._-]*)['"]""", RegexOption.IGNORE_CASE).findAll(allContent.toString())) {
+                    val p = m.groupValues[1]
+                    if (p.endsWith(".js") || (!p.contains(" ") && !p.contains("(") && p.length < 40)) {
+                        foundPaths.add(p)
+                    }
+                }
+
+                debug.appendLine("\nService paths found: ${foundPaths.joinToString(", ")}")
+
+                for (path in foundPaths) {
+                    val url = if (path.startsWith("http")) path
+                    else if (path.endsWith(".js")) "http://$routerIp/js/$path"
+                    else "http://$routerIp/js/$path.js"
+                    val content = fetchUrl(url, cookies)
+                    if (content.length > 100 && !content.contains("Document Error")) {
+                        debug.appendLine("\n$path: ${content.length} chars")
+                        debug.appendLine("Content:\n$content")
+                        allContent.appendLine(content)
+                    }
+                }
+
+                // ═══ حلل المحتوى ═══
                 debug.appendLine("\n=== ANALYZE ===")
-                val fullText = allJsContent.toString()
+                val fullText = allContent.toString()
 
                 val goformIds = mutableSetOf<String>()
                 val macParams = mutableSetOf<String>()
 
-                // ابحث عن SET_ commands
+                // ابحث عن goformId
                 for (m in Regex("""['"](SET_[A-Z_]+)['"]""").findAll(fullText)) {
                     goformIds.add(m.groupValues[1])
                 }
-                for (m in Regex("""goformId['"]*\s*[=:]\s*['"]*([A-Z_a-z]+)['"]*""").findAll(fullText)) {
+                for (m in Regex("""goformId['"]?\s*[=:]\s*['"]?([A-Z_a-z]+)['"]?""").findAll(fullText)) {
                     goformIds.add(m.groupValues[1])
                 }
-                for (m in Regex("""goformId\s*=\s*([A-Z_]+)""").findAll(fullText)) {
+                for (m in Regex("""['"]goformId['"]\s*:\s*['"]([^'"]+)['"]""").findAll(fullText)) {
                     goformIds.add(m.groupValues[1])
                 }
 
-                // ابحث عن معاملات MAC/filter
-                val paramPatterns = listOf(
-                    Regex("""['"]([a-zA-Z_]*[Mm][Aa][Cc][a-zA-Z_]*[Ll]ist[a-zA-Z_]*)['"]"""),
-                    Regex("""['"]([a-zA-Z_]*[Ff]ilter[a-zA-Z_]*[Mm]ac[a-zA-Z_]*)['"]"""),
-                    Regex("""['"]([a-zA-Z_]*[Mm]ac[Ff]ilter[a-zA-Z_]*)['"]"""),
-                    Regex("""['"]([a-zA-Z_]*[Bb]locked[a-zA-Z_]*[Ll]ist[a-zA-Z_]*)['"]"""),
-                    Regex("""['"]([a-zA-Z_]*[Dd]eny[a-zA-Z_]*[Ll]ist[a-zA-Z_]*)['"]"""),
-                    Regex("""['"]([a-zA-Z_]*[Aa]ccess[Cc]ontrol[a-zA-Z_]*)['"]"""),
-                    Regex("""['"](mac_filter_enabled)['"]"""),
-                    Regex("""['"](mac_filter_mode)['"]""")
-                )
-                for (p in paramPatterns) {
-                    for (m in p.findAll(fullText)) {
-                        val param = m.groupValues[1]
-                        if (param.length > 3 && param.length < 50) macParams.add(param)
-                    }
+                // ابحث عن معاملات MAC
+                for (m in Regex("""['"]([a-zA-Z_]*[Mm][Aa][Cc][a-zA-Z_]*)['"]""").findAll(fullText)) {
+                    val p = m.groupValues[1]
+                    if (p.length in 4..40) macParams.add(p)
+                }
+                for (m in Regex("""['"]([a-zA-Z_]*[Ff]ilter[a-zA-Z_]*)['"]""").findAll(fullText)) {
+                    val p = m.groupValues[1]
+                    if (p.length in 4..40) macParams.add(p)
                 }
 
-                // ابحث عن fetch/ajax calls مع MAC
-                for (m in Regex("""(?:fetch|ajax|post|get)\s*\([^)]*['"](.*?mac.*?)['"]""", RegexOption.IGNORE_CASE).findAll(fullText)) {
-                    debug.appendLine("  Fetch call: ${m.groupValues[1]}")
-                }
-
-                debug.appendLine("\ngoformIds: ${goformIds.joinToString(", ")}")
+                debug.appendLine("goformIds: ${goformIds.joinToString(", ")}")
                 debug.appendLine("macParams: ${macParams.joinToString(", ")}")
 
-                // ═══ الخطوة 3: جرب الأوامر ═══
+                // ═══ جرب الأوامر ═══
                 debug.appendLine("\n=== TRY COMMANDS ===")
                 var success = false
 
                 goformIds.addAll(listOf(
-                    "SET_WIFI_MAC_FILTER", "SET_WIFI_AP_MAC_FILTER",
-                    "SET_MAC_FILTER", "ACCESS_CONTROL_SET",
-                    "ACCESS_CONTROL_ADD", "SET_PARENTAL_CONTROL",
-                    "SET_BLOCKED_DEVICES"
+                    "SET_WIFI_MAC_FILTER", "SET_WIFI_AP_MAC_FILTER", "SET_MAC_FILTER"
                 ))
                 if (macParams.isEmpty()) {
                     macParams.addAll(listOf(
@@ -288,7 +296,6 @@ class RouterRepository(private val storage: SecureStorage) {
                     if (success) break
                     for (param in macParams) {
                         if (success) break
-
                         try {
                             val body = "isTest=false&goformId=$id&$param=$newList"
                             val r = api.postRaw(body.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
@@ -362,51 +369,43 @@ class RouterRepository(private val storage: SecureStorage) {
         return try {
             withContext(Dispatchers.IO) {
                 val debug = StringBuilder()
-                val api = RetrofitClient.getApi()
                 val routerIp = storage.getRouterIp()
                 val cookies = RetrofitClient.getCookiesString()
 
                 debug.appendLine("=== TEST ===")
 
                 try {
-                    val r = api.getGenericCmd(cmd = "Language")
+                    val r = RetrofitClient.getApi().getGenericCmd(cmd = "Language")
                     debug.appendLine("Language: ${r.body()?.string()}")
                 } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
 
-                // اسحب index.html
-                debug.appendLine("\n--- index.html ---")
-                val html = fetchUrl("http://$routerIp/index.html", cookies)
-                debug.appendLine("Length: ${html.length}")
-
-                // استخرج scripts
-                val scripts = Regex("""src=['"]([^'"]+\.js[^'"]*)['"]""").findAll(html).map { it.groupValues[1] }.toList()
-                debug.appendLine("Scripts: ${scripts.joinToString(", ")}")
-
-                // اسحب كل module
-                debug.appendLine("\n--- Modules ---")
-                val mods = listOf(
-                    "config/config.js", "config/menu.js", "router.js",
-                    "wifi/wifi.js", "wifi/macFilter.js",
-                    "wlan/wlan.js", "wlan/macFilter.js",
-                    "macFilter/macFilter.js", "mac_filter/mac_filter.js",
-                    "security/security.js", "accessControl/accessControl.js",
-                    "settings/wifi.js", "settings/wlan.js",
-                    "status/statusBar.js", "login.js", "language.js"
+                // ابحث عن service.js
+                debug.appendLine("\n=== FIND SERVICE.JS ===")
+                val searchPaths = listOf(
+                    "js/service.js", "js/service/service.js", "js/services/service.js",
+                    "js/api.js", "js/service/api.js", "js/common.js",
+                    "js/util.js", "js/utils.js", "js/service/utilService.js",
+                    "js/service/ajaxService.js", "js/service/httpService.js",
+                    "js/service/requestService.js", "js/service/dataService.js",
+                    "js/service/apiService.js", "js/service/restService.js"
                 )
-                for (mod in mods) {
-                    val content = fetchUrl("http://$routerIp/js/$mod", cookies)
-                    if (content.length > 50) {
-                        debug.appendLine("\n=== js/$mod (${content.length} chars) ===")
-                        debug.appendLine(content.take(3000))
+                for (path in searchPaths) {
+                    val content = fetchUrl("http://$routerIp/$path", cookies)
+                    if (content.length > 100) {
+                        debug.appendLine("\n✅ $path (${content.length} chars)")
+                        debug.appendLine(content.take(5000))
                     }
                 }
+
+                // ابحث عن config.js كامل
+                debug.appendLine("\n=== CONFIG.JS ===")
+                val configJs = fetchUrl("http://$routerIp/js/config/config.js", cookies)
+                debug.appendLine(configJs)
 
                 Result.success(debug.toString())
             }
         } catch (e: Exception) { Result.failure(Exception("Test: ${e.message}")) }
     }
-
-    // ═══ باقي الدوال ═══
 
     private fun flushArpCache(debug: StringBuilder) {
         try {
