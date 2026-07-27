@@ -58,6 +58,14 @@ import com.example.netguardzte.ui.WebCaptureActivity
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+val context = LocalContext.current
+
+Button(onClick = {
+    val intent = Intent(context, WebCaptureActivity::class.java)
+    context.startActivity(intent)
+}) {
+    Text("Block Capture")
+}
 fun DevicesScreen(
     devices: List<Device>,
     isLoading: Boolean,
