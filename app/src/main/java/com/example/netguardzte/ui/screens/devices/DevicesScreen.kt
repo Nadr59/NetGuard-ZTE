@@ -1,5 +1,8 @@
 package com.example.netguardzte.ui.screens.devices
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Block
@@ -34,8 +38,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -64,6 +73,20 @@ fun DevicesScreen(
     onToggleDebug: () -> Unit,
     onTestRouter: () -> Unit
 ) {
+    val context = LocalContext.current
+    var copyMessage by remember { mutableStateOf<String?>(null) }
+
+    fun copyDebug() {
+        try {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = ClipData.newPlainText("Debug Info", debugInfo)
+            clipboard.setPrimaryClip(clip)
+            copyMessage = "تم النسخ"
+        } catch (e: Exception) {
+            copyMessage = "فشل النسخ: ${e.message}"
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -73,10 +96,7 @@ fun DevicesScreen(
                         Text("🧪", fontSize = 18.sp)
                     }
                     IconButton(onClick = onToggleDebug) {
-                        Text(
-                            text = if (showDebugInfo) "🔍" else "🔧",
-                            fontSize = 18.sp
-                        )
+                        Text("🔍", fontSize = 18.sp)
                     }
                     IconButton(onClick = onNavigateToBlocked) {
                         Icon(Icons.Default.Block, "المحظورون")
@@ -139,7 +159,7 @@ fun DevicesScreen(
                         }
                         if (showDebugInfo && debugInfo.isNotBlank()) {
                             Spacer(Modifier.height(16.dp))
-                            DebugCard(debugInfo)
+                            DebugCard(debugInfo, onCopy = { copyDebug() }, copyMessage = copyMessage)
                         }
                     }
                 }
@@ -172,7 +192,7 @@ fun DevicesScreen(
                         }
                         if (showDebugInfo && debugInfo.isNotBlank()) {
                             Spacer(Modifier.height(16.dp))
-                            DebugCard(debugInfo)
+                            DebugCard(debugInfo, onCopy = { copyDebug() }, copyMessage = copyMessage)
                         }
                     }
                 }
@@ -223,7 +243,7 @@ fun DevicesScreen(
                         if (showDebugInfo && debugInfo.isNotBlank()) {
                             item {
                                 Spacer(Modifier.height(8.dp))
-                                DebugCard(debugInfo)
+                                DebugCard(debugInfo, onCopy = { copyDebug() }, copyMessage = copyMessage)
                             }
                         }
 
@@ -271,7 +291,7 @@ fun DevicesScreen(
 }
 
 @Composable
-private fun DebugCard(debugInfo: String) {
+private fun DebugCard(debugInfo: String, onCopy: () -> Unit, copyMessage: String?) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -279,23 +299,45 @@ private fun DebugCard(debugInfo: String) {
         )
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
-            Text(
-                "🔍 Debug Info (اسحب لأسفل)",
-                fontWeight = FontWeight.Bold,
-                style = MaterialTheme.typography.titleSmall
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = debugInfo,
-                style = MaterialTheme.typography.labelSmall,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 10.sp,
-                lineHeight = 14.sp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(300.dp)
-                    .verticalScroll(rememberScrollState())
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "🔍 Debug Info",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleSmall
+                )
+                TextButton(onClick = onCopy) {
+                    Text("📋 نسخ الكل", fontSize = 13.sp)
+                }
+            }
+
+            copyMessage?.let {
+                Text(
+                    text = it,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+            }
+
+            Spacer(Modifier.height(4.dp))
+
+            SelectionContainer {
+                Text(
+                    text = debugInfo,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(400.dp)
+                        .verticalScroll(rememberScrollState())
+                )
+            }
         }
     }
 }
