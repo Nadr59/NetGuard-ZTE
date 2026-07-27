@@ -8,10 +8,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import retrofit2.Response
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import java.util.concurrent.TimeUnit
 
 class RouterRepository(private val storage: SecureStorage) {
 
@@ -25,6 +28,14 @@ class RouterRepository(private val storage: SecureStorage) {
         private set
     var allCommandsDebug: String = ""
         private set
+
+    private val httpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.SECONDS)
+            .followRedirects(false)
+            .build()
+    }
 
     suspend fun login(
         routerIp: String,
@@ -122,7 +133,7 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     // ═══════════════════════════════════════════
-    // حظر — بحث شامل عن الأمر الصحيح
+    // حظر — اكتشاف تلقائي + تجربة شاملة
     // ═══════════════════════════════════════════
     suspend fun blockDevice(mac: String, currentBlockedList: List<String>): Result<String> {
         return try {
@@ -130,137 +141,130 @@ class RouterRepository(private val storage: SecureStorage) {
                 val api = RetrofitClient.getApi()
                 val debug = StringBuilder()
                 val newList = (currentBlockedList + mac.uppercase()).joinToString(";")
-                val newListComma = (currentBlockedList + mac.uppercase()).joinToString(",")
 
                 debug.appendLine("=== BLOCK $mac ===")
-                debug.appendLine("New list (semicolon): $newList")
-                debug.appendLine("New list (comma): $newListComma")
+                debug.appendLine("List: $newList")
+                debug.appendLine("Cookies: ${RetrofitClient.getCookiesString()}")
 
-                // ═══ الخطوة 1: اكتشف goformIds من صفحات الراوتر ═══
-                debug.appendLine("\n--- Discover from pages ---")
-                val discoveredIds = discoverGoformIds(debug)
+                // ═══ الخطوة 1: اسحب صفحة WiFi من الراوتر ═══
+                debug.appendLine("\n=== DISCOVER COMMANDS ===")
+                val routerIp = storage.getRouterIp()
+                val pageCmds = discoverFromPages(routerIp, debug)
 
-                // ═══ الخطوة 2: جرب كل goformId مكتشف ═══
-                for (id in discoveredIds) {
-                    debug.appendLine("\nTrying discovered: $id")
+                // ═══ الخطوة 2: جرب الأوامر المكتشفة ═══
+                debug.appendLine("\n=== TRY DISCOVERED (${pageCmds.size}) ===")
+                var success = false
+
+                for (cmd in pageCmds) {
+                    if (success) break
+                    debug.appendLine("\n--- ${cmd.goformId} | ${cmd.paramName} ---")
                     try {
-                        val fields = mapOf(
-                            "isTest" to "false",
-                            "goformId" to id,
-                            "mac_filter_enabled" to "1",
-                            "mac_filter_mode" to "0",
-                            "mac_filter_list" to newList,
-                            "MAC_Filter_list" to newList,
-                            "MAC_list" to newList,
-                            "mac_list" to newList,
-                            "wifi_mac_filter_list" to newList,
-                            "filterMacList" to newList,
-                            "macFilterList" to newList,
-                            "denyList" to newList,
-                            "allowList" to newList,
-                            "blocked_list" to newList
-                        )
-                        val body = fields.entries.joinToString("&") { "${it.key}=${it.value}" }
-                        val requestBody = body.toRequestBody("application/x-www-form-urlencoded".toMediaType())
-                        val r = api.postRaw(requestBody)
+                        val body = "isTest=false&goformId=${cmd.goformId}&${cmd.paramName}=$newList"
+                        val r = api.postRaw(body.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
                         val b = r.body()?.string() ?: ""
-                        debug.appendLine("  Code: ${r.code()}, Body: ${b.take(200)}")
+                        debug.appendLine("  semicolon: ${r.code()} ${b.take(150)}")
+                        if (b.contains("\"result\":0") || b.contains("\"result\":\"0\"") ||
+                            b.contains("success")) {
+                            debug.appendLine("  ✅ SUCCESS!")
+                            success = true
+                        }
+                    } catch (e: Exception) {
+                        debug.appendLine("  Error: ${e.message}")
+                    }
+
+                    // جرب مع تفعيل الفلتر
+                    try {
+                        val body = "isTest=false&goformId=${cmd.goformId}&mac_filter_enabled=1&mac_filter_mode=0&${cmd.paramName}=$newList"
+                        val r = api.postRaw(body.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
+                        val b = r.body()?.string() ?: ""
+                        debug.appendLine("  with enable: ${r.code()} ${b.take(150)}")
+                        if (b.contains("\"result\":0") || b.contains("\"result\":\"0\"") ||
+                            b.contains("success")) {
+                            debug.appendLine("  ✅ SUCCESS with enable!")
+                            success = true
+                        }
                     } catch (e: Exception) {
                         debug.appendLine("  Error: ${e.message}")
                     }
                 }
 
-                // ═══ الخطوة 3: جرب أوامر معروفة ═══
-                debug.appendLine("\n--- Known commands ---")
-                val knownIds = listOf(
-                    "SET_WIFI_MAC_FILTER",
-                    "SET_WIFI_AP_MAC_FILTER",
-                    "SET_MAC_FILTER",
-                    "ACCESS_CONTROL_SET",
-                    "ACCESS_CONTROL_ADD",
-                    "PARENTAL_CONTROL_SET",
-                    "SET_PARENTAL_CONTROL",
-                    "SET_WIFI_ACCESS_CONTROL",
-                    "WLAN_SET_MAC_FILTER",
-                    "SET_BLOCKED_DEVICES",
-                    "WIFI_MAC_FILTER_SET",
-                    "SET_LAN_MAC_FILTER"
+                // ═══ الخطوة 3: جرب 15+ أمر معروف ═══
+                debug.appendLine("\n=== TRY KNOWN COMMANDS ===")
+                data class CmdAttempt(val goformId: String, val paramName: String, val extra: Map<String, String> = emptyMap())
+
+                val attempts = listOf(
+                    CmdAttempt("SET_WIFI_MAC_FILTER", "mac_filter_list"),
+                    CmdAttempt("SET_WIFI_MAC_FILTER", "MAC_Filter_list"),
+                    CmdAttempt("SET_WIFI_MAC_FILTER", "macFilterList"),
+                    CmdAttempt("SET_WIFI_MAC_FILTER", "filterMacList"),
+                    CmdAttempt("SET_WIFI_AP_MAC_FILTER", "mac_filter_list"),
+                    CmdAttempt("SET_WIFI_AP_MAC_FILTER", "macfilter_addr"),
+                    CmdAttempt("SET_MAC_FILTER", "mac_filter_list"),
+                    CmdAttempt("SET_MAC_FILTER", "macFilterList"),
+                    CmdAttempt("ACCESS_CONTROL_SET", "access_control_list"),
+                    CmdAttempt("ACCESS_CONTROL_ADD", "mac_filter_list"),
+                    CmdAttempt("SET_PARENTAL_CONTROL", "mac_filter_list"),
+                    CmdAttempt("WLAN_SET_MAC_FILTER", "mac_filter_list"),
+                    CmdAttempt("SET_BLOCKED_DEVICES", "blocked_list"),
+                    CmdAttempt("WIFI_MAC_FILTER_SET", "mac_filter_list"),
+                    CmdAttempt("SET_LAN_MAC_FILTER", "mac_filter_list"),
+                    CmdAttempt("SET_WIFI_AP_macfilter", "macfilter_addr"),
+                    CmdAttempt("SET_WIFI_ACCESS_CONTROL", "mac_filter_list"),
+                    // مع تفعيل الفلتر
+                    CmdAttempt("SET_WIFI_MAC_FILTER", "mac_filter_list", mapOf("mac_filter_enabled" to "1", "mac_filter_mode" to "0")),
+                    CmdAttempt("SET_WIFI_MAC_FILTER", "mac_filter_list", mapOf("wifi_mac_filter_enabled" to "1", "wifi_mac_filter_mode" to "0")),
                 )
 
-                for (id in knownIds) {
-                    debug.appendLine("\n--- $id ---")
+                for (a in attempts) {
+                    if (success) break
+                    debug.appendLine("\n--- ${a.goformId} / ${a.paramName} ---")
 
-                    // محاولة 1: فاصلة منقوطة
-                    try {
-                        val body = "isTest=false&goformId=$id&mac_filter_enabled=1&mac_filter_mode=0&mac_filter_list=$newList"
-                        val r = api.postRaw(body.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
-                        val b = r.body()?.string() ?: ""
-                        debug.appendLine("  semicolon: ${r.code()} ${b.take(100)}")
-                        if (b.contains("\"result\":\"0\"") || b.contains("\"result\":0") ||
-                            b.contains("\"result\":\"success\"") || b.contains("successful")) {
-                            debug.appendLine("  ✅ SUCCESS with $id!")
-                        }
-                    } catch (e: Exception) {
-                        debug.appendLine("  Error: ${e.message}")
-                    }
+                    // بناء body
+                    val fields = mutableMapOf(
+                        "isTest" to "false",
+                        "goformId" to a.goformId,
+                        a.paramName to newList
+                    )
+                    fields.putAll(a.extra)
+                    val bodyStr = fields.entries.joinToString("&") { "${it.key}=${it.value}" }
 
-                    // محاولة 2: فاصلة عادية
                     try {
-                        val body = "isTest=false&goformId=$id&mac_filter_enabled=1&mac_filter_mode=0&mac_filter_list=$newListComma"
-                        val r = api.postRaw(body.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
+                        val r = api.postRaw(bodyStr.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
                         val b = r.body()?.string() ?: ""
-                        debug.appendLine("  comma: ${r.code()} ${b.take(100)}")
-                        if (b.contains("\"result\":\"0\"") || b.contains("\"result\":0") ||
-                            b.contains("\"result\":\"success\"") || b.contains("successful")) {
-                            debug.appendLine("  ✅ SUCCESS with $id (comma)!")
-                        }
-                    } catch (e: Exception) {
-                        debug.appendLine("  Error: ${e.message}")
-                    }
-
-                    // محاولة 3: بدون مُحددات إضافية
-                    try {
-                        val body = "isTest=false&goformId=$id&mac_filter_list=$newList"
-                        val r = api.postRaw(body.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
-                        val b = r.body()?.string() ?: ""
-                        debug.appendLine("  minimal: ${r.code()} ${b.take(100)}")
-                        if (b.contains("\"result\":\"0\"") || b.contains("\"result\":0") ||
-                            b.contains("\"result\":\"success\"") || b.contains("successful")) {
-                            debug.appendLine("  ✅ SUCCESS with $id (minimal)!")
+                        debug.appendLine("  ${r.code()} ${b.take(150)}")
+                        if (b.contains("\"result\":0") || b.contains("\"result\":\"0\"") ||
+                            b.contains("success")) {
+                            debug.appendLine("  ✅ SUCCESS!")
+                            success = true
                         }
                     } catch (e: Exception) {
                         debug.appendLine("  Error: ${e.message}")
                     }
                 }
 
-                // ═══ الخطوة 4: جرب setMacFilter الأصلي ═══
-                debug.appendLine("\n--- Original setMacFilter ---")
+                // ═══ الخطوة 4: جرب setMacFilter + enableMacFilter ═══
+                debug.appendLine("\n=== TRY API METHODS ===")
                 try {
-                    val r = api.setMacFilter(macList = newList)
-                    debug.appendLine("  Code: ${r.code()}, Body: ${r.body()?.string()?.take(100)}")
-                } catch (e: Exception) {
-                    debug.appendLine("  Error: ${e.message}")
-                }
+                    val r1 = api.setMacFilter(macList = newList)
+                    debug.appendLine("setMacFilter: ${r1.code()} ${r1.body()?.string()?.take(100)}")
+                } catch (e: Exception) { debug.appendLine("setMacFilter error: ${e.message}") }
 
                 try {
-                    val r = api.enableMacFilter(mode = "0", macList = newList)
-                    debug.appendLine("  enableMacFilter: ${r.code()}, Body: ${r.body()?.string()?.take(100)}")
-                } catch (e: Exception) {
-                    debug.appendLine("  Error: ${e.message}")
-                }
+                    val r2 = api.enableMacFilter(mode = "0", macList = newList)
+                    debug.appendLine("enableMacFilter: ${r2.code()} ${r2.body()?.string()?.take(100)}")
+                } catch (e: Exception) { debug.appendLine("enableMacFilter error: ${e.message}") }
 
                 // ═══ الخطوة 5: تحقق ═══
-                debug.appendLine("\n--- Verify ---")
+                debug.appendLine("\n=== VERIFY ===")
                 var verified = false
                 try {
+                    Thread.sleep(1000) // انتظر ثانية
                     val r = api.getMacFilterList()
                     val b = r.body()?.string() ?: ""
-                    debug.appendLine("  Filter: $b")
+                    debug.appendLine("Filter: $b")
                     verified = b.contains(mac, ignoreCase = true)
-                    debug.appendLine(if (verified) "  ✅ MAC in filter!" else "  ❌ MAC NOT in filter")
-                } catch (e: Exception) {
-                    debug.appendLine("  Error: ${e.message}")
-                }
+                    debug.appendLine(if (verified) "✅ MAC in filter!" else "❌ MAC NOT in filter")
+                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
 
                 lastRawResponse = debug.toString()
                 allCommandsDebug = debug.toString()
@@ -268,251 +272,135 @@ class RouterRepository(private val storage: SecureStorage) {
                 if (verified) {
                     Result.success("تم حظر الجهاز")
                 } else {
-                    Result.failure(Exception("لم يتم الحظر — اضغط 🔍 لرؤية التفاصيل"))
+                    Result.failure(Exception("فشل الحظر — اضغط 🔍 للتفاصيل"))
                 }
             }
         } catch (e: Exception) { Result.failure(e) }
     }
 
-    // ═══ اكتشاف goformIds من صفحات الراوتر ═══
-    private fun discoverGoformIds(debug: StringBuilder): List<String> {
-        val ids = mutableSetOf<String>()
-        try {
-            val routerIp = storage.getRouterIp()
-            val pages = listOf("", "index.html", "wifi.html", "status.html", "settings.html",
-                "security.html", "access_control.html", "mac_filter.html", "wlan.html",
-                "wlanMultiMacFilter.asp", "wlsecurity.asp", "wlmacflt.asp",
-                "parental_control.html", "advance.html")
+    // ═══ اكتشاف أوامر من صفحات الراوتر ═══
+    private fun discoverFromPages(routerIp: String, debug: StringBuilder): List<DiscoveredCmd> {
+        val cmds = mutableListOf<DiscoveredCmd>()
+        val pages = listOf(
+            "", "index.html", "wifi.html", "status.html",
+            "wlan.html", "wlanSettings.html", "wlanMultiMacFilter.asp",
+            "wlsecurity.asp", "wlmacflt.asp", "settings.html",
+            "security.html", "access_control.html", "mac_filter.html",
+            "advance.html", "parental.html", "wps.html"
+        )
 
-            for (page in pages) {
-                try {
-                    val url = "http://$routerIp/$page"
-                    val client = okhttp3.OkHttpClient.Builder()
-                        .connectTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
-                        .readTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
-                        .build()
-                    val request = okhttp3.Request.Builder().url(url).build()
-                    val response = client.newCall(request).execute()
-                    val html = response.body?.string() ?: ""
+        val allHtml = StringBuilder()
 
-                    if (html.length > 100) {
-                        debug.appendLine("  /$page -> ${html.length} chars")
+        for (page in pages) {
+            try {
+                val url = "http://$routerIp/$page"
+                val request = Request.Builder().url(url).build()
+                val response = httpClient.newCall(request).execute()
+                val html = response.body?.string() ?: ""
+                if (html.length > 100) {
+                    debug.appendLine("  /$page -> ${html.length} chars")
+                    allHtml.appendLine(html)
 
-                        // استخرج goformId
-                        val patterns = listOf(
-                            Regex("""goformId['":\s=]+['"]*([A-Z_]+)['"]*"""),
-                            Regex("""goformId['"]*\s*:\s*['"]([A-Z_]+)['"]"""),
-                            Regex("""cmd['":\s=]+['"]*([A-Z_]+)['"]*"""),
-                            Regex("""['"]([A-Z_]{8,})['"]""")
-                        )
-
-                        for (p in patterns) {
-                            for (m in p.findAll(html)) {
-                                val id = m.groupValues[1]
-                                if (id.length > 5 && id.contains("FILTER") || id.contains("MAC") ||
-                                    id.contains("ACCESS") || id.contains("BLOCK") ||
-                                    id.contains("CONTROL") || id.contains("PARENTAL") ||
-                                    id.contains("WLAN") || id.contains("WIFI")) {
-                                    ids.add(id)
-                                    debug.appendLine("    Found: $id")
-                                }
-                            }
-                        }
-
-                        // استخرج أسماء المعاملات
-                        val paramPatterns = listOf(
-                            Regex("""['"]([a-zA-Z_]*mac[a-zA-Z_]*list[a-zA-Z_]*)['"]"""),
-                            Regex("""['"]([a-zA-Z_]*filter[a-zA-Z_]*mac[a-zA-Z_]*)['"]"""),
-                            Regex("""['"]([a-zA-Z_]*blocked[a-zA-Z_]*)['"]"""),
-                            Regex("""['"]([a-zA-Z_]*deny[a-zA-Z_]*)['"]""")
-                        )
-                        for (p in paramPatterns) {
-                            for (m in p.findAll(html)) {
-                                debug.appendLine("    Param: ${m.groupValues[1]}")
-                            }
-                        }
+                    // استخرج goformId
+                    val goformPattern = Regex("""goformId['"]*\s*[=:]\s*['"]*([A-Z_a-z]{5,})['"]*""")
+                    for (m in goformPattern.findAll(html)) {
+                        val id = m.groupValues[1]
+                        debug.appendLine("    goformId: $id")
                     }
-                } catch (_: Exception) {}
-            }
-        } catch (e: Exception) {
-            debug.appendLine("  Discovery error: ${e.message}")
-        }
 
-        // أضف افتراضيات
-        ids.addAll(listOf(
-            "SET_WIFI_MAC_FILTER",
-            "SET_WIFI_AP_MAC_FILTER",
-            "SET_MAC_FILTER"
-        ))
+                    // استخرج معاملات MAC
+                    val macParamPattern = Regex("""['"]([a-zA-Z_]*[Mm][Aa][Cc][a-zA-Z_]*[Ll]ist[a-zA-Z_]*)['"]""")
+                    for (m in macParamPattern.findAll(html)) {
+                        debug.appendLine("    mac param: ${m.groupValues[1]}")
+                    }
 
-        debug.appendLine("  Total IDs to try: ${ids.size}")
-        return ids.toList()
-    }
-
-    // ═══ باقي الدوال ═══
-
-    private fun flushArpCache(debug: StringBuilder) {
-        try {
-            val commands = listOf("ip neigh flush dev wlan0", "ip -s neigh flush dev wlan0")
-            for (cmd in commands) {
-                try {
-                    val p = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
-                    p.waitFor()
-                    debug.appendLine("  $cmd -> done")
-                } catch (e: Exception) { debug.appendLine("  $cmd -> ${e.message}") }
-            }
-        } catch (e: Exception) { debug.appendLine("Flush error: ${e.message}") }
-    }
-
-    private fun forceArpEntries(subnet: String, debug: StringBuilder) {
-        try {
-            for (i in 1..50) {
-                val ip = "$subnet.$i"
-                for (port in listOf(80, 443)) {
-                    try {
-                        val socket = java.net.Socket()
-                        socket.connect(java.net.InetSocketAddress(ip, port), 30)
-                        socket.close()
-                    } catch (_: Exception) {}
+                    val filterParamPattern = Regex("""['"]([a-zA-Z_]*[Ff]ilter[a-zA-Z_]*[Mm]ac[a-zA-Z_]*)['"]""")
+                    for (m in filterParamPattern.findAll(html)) {
+                        debug.appendLine("    filter param: ${m.groupValues[1]}")
+                    }
                 }
-            }
-            debug.appendLine("  TCP done")
-        } catch (e: Exception) { debug.appendLine("  TCP error: ${e.message}") }
-    }
-
-    private suspend fun readArpFromAllSources(debug: StringBuilder): List<Device> {
-        var devices = readIpNeigh(debug)
-        if (devices.isNotEmpty()) return devices
-        devices = readArpFromFile()
-        if (devices.isNotEmpty()) return devices
-        devices = readArpFromCommand("arp -a")
-        if (devices.isNotEmpty()) return devices
-        devices = readArpFromCommand("cat /proc/net/arp")
-        return devices
-    }
-
-    private fun readIpNeigh(debug: StringBuilder): List<Device> {
-        val devices = mutableListOf<Device>()
-        try {
-            val p = Runtime.getRuntime().exec(arrayOf("sh", "-c", "ip neigh"))
-            val reader = BufferedReader(InputStreamReader(p.inputStream))
-            var line = reader.readLine()
-            while (line != null) {
-                try {
-                    val device = parseArpLine(line)
-                    if (device != null) {
-                        val upperLine = line.uppercase()
-                        if (!upperLine.contains("FAILED") && !upperLine.contains("INCOMPLETE")) {
-                            devices.add(device)
-                        }
-                    }
-                } catch (_: Exception) {}
-                line = reader.readLine()
-            }
-            p.waitFor()
-            debug.appendLine("  ip neigh: ${devices.size}")
-        } catch (e: Exception) { debug.appendLine("  ip neigh error: ${e.message}") }
-        return devices
-    }
-
-    private fun readArpFromFile(): List<Device> {
-        val devices = mutableListOf<Device>()
-        var reader: BufferedReader? = null
-        try {
-            val file = File("/proc/net/arp")
-            if (!file.exists() || !file.canRead()) return emptyList()
-            reader = java.io.BufferedReader(java.io.FileReader(file))
-            reader.readLine()
-            var line = reader.readLine()
-            while (line != null) {
-                try {
-                    val parts = line.trim().split("\\s+".toRegex())
-                    if (parts.size >= 4) {
-                        val ip = parts[0]
-                        val mac = parts[3].uppercase()
-                        val flags = parts[2]
-                        if (mac != "00:00:00:00:00:00" && flags != "0x0") {
-                            devices.add(makeDevice(ip, mac))
-                        }
-                    }
-                } catch (_: Exception) {}
-                line = reader.readLine()
-            }
-        } catch (_: Exception) {}
-        finally { try { reader?.close() } catch (_: Exception) {} }
-        return devices
-    }
-
-    private fun readArpFromCommand(command: String): List<Device> {
-        val devices = mutableListOf<Device>()
-        var process: Process? = null
-        try {
-            process = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
-            val reader = BufferedReader(InputStreamReader(process.inputStream))
-            var line = reader.readLine()
-            while (line != null) {
-                try {
-                    val device = parseArpLine(line)
-                    if (device != null) devices.add(device)
-                } catch (_: Exception) {}
-                line = reader.readLine()
-            }
-            process.waitFor()
-        } catch (_: Exception) {}
-        finally { try { process?.destroy() } catch (_: Exception) {} }
-        return devices
-    }
-
-    private fun parseArpLine(line: String): Device? {
-        val macRegex = Regex("[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}")
-        val ipRegex = Regex("(\\d{1,3}\\.){3}\\d{1,3}")
-        val macMatch = macRegex.find(line) ?: return null
-        val mac = macMatch.value.uppercase()
-        if (mac == "00:00:00:00:00:00") return null
-        val ipMatch = ipRegex.find(line) ?: return null
-        return makeDevice(ipMatch.value, mac)
-    }
-
-    private suspend fun readFromRouterApi(debug: StringBuilder): List<Device> {
-        try {
-            val api = RetrofitClient.getApi()
-            for (cmd in listOf("station_list", "wifi_station_list", "dhcp_list", "client_list")) {
-                try {
-                    val r = api.getGenericCmd(cmd = cmd)
-                    val b = r.body()?.string() ?: ""
-                    debug.appendLine("  [$cmd] -> ${b.take(100)}")
-                    if (b.length > 30 && !b.contains("\"\":\"$cmd\"")) {
-                        val devices = parseDevices(b)
-                        if (devices.isNotEmpty()) return devices
-                    }
-                } catch (e: Exception) { debug.appendLine("  [$cmd] error: ${e.message}") }
-            }
-        } catch (e: Exception) { debug.appendLine("  API error: ${e.message}") }
-        return emptyList()
-    }
-
-    private fun makeDevice(ip: String, mac: String): Device {
-        val routerIp = try { storage.getRouterIp() } catch (_: Exception) { "" }
-        return Device(mac = mac, ip = ip, hostname = nameFor(ip, mac), connectionType = if (ip == routerIp) "Router" else "WiFi")
-    }
-
-    private fun nameFor(ip: String, mac: String): String {
-        val v = when {
-            mac.startsWith("A4:83") || mac.startsWith("F0:18") || mac.startsWith("3C:2E") -> "Apple"
-            mac.startsWith("CC:96") || mac.startsWith("58:48") || mac.startsWith("AC:CF") -> "Huawei"
-            mac.startsWith("70:F9") || mac.startsWith("94:B8") || mac.startsWith("C0:BD") -> "Samsung"
-            mac.startsWith("6C:B0") || mac.startsWith("54:FA") || mac.startsWith("AC:F7") -> "Xiaomi"
-            mac.startsWith("58:7F") || mac.startsWith("74:51") || mac.startsWith("50:64") -> "Xiaomi"
-            mac.startsWith("00:16") || mac.startsWith("50:C7") || mac.startsWith("EC:08") -> "TP-Link"
-            mac.startsWith("88:66") || mac.startsWith("F4:F5") -> "Google"
-            mac.startsWith("F0:27") || mac.startsWith("74:C2") -> "Amazon"
-            mac.startsWith("B8:27") -> "Raspberry Pi"
-            mac.startsWith("00:21") -> "ZTE"
-            else -> ""
+            } catch (_: Exception) {}
         }
-        val s = ip.substringAfterLast(".")
-        return when { v.isNotBlank() -> "$v ($s)"; s == "1" -> "الراوتر"; else -> "جهاز .$s" }
+
+        // استخرج من JavaScript
+        val jsFiles = listOf("js/common.js", "js/config.js", "js/index.js",
+            "js/wifi.js", "js/wlan.js", "js/main.js", "js/app.js",
+            "js/settings.js", "js/security.js", "static/js/main.js",
+            "js/wireless.js", "js/advance.js", "js/goform.js")
+
+        for (js in jsFiles) {
+            try {
+                val url = "http://$routerIp/$js"
+                val request = Request.Builder().url(url).build()
+                val response = httpClient.newCall(request).execute()
+                val content = response.body?.string() ?: ""
+                if (content.length > 100) {
+                    debug.appendLine("  /$js -> ${content.length} chars")
+                    allHtml.appendLine(content)
+                }
+            } catch (_: Exception) {}
+        }
+
+        // حلل كل المحتوى
+        val allText = allHtml.toString()
+
+        // ابحث عن goformIds
+        val goformIds = mutableSetOf<String>()
+        for (m in Regex("""goformId['"]*\s*[=:]\s*['"]*([A-Z_a-z]{5,})['"]*""").findAll(allText)) {
+            goformIds.add(m.groupValues[1])
+        }
+        for (m in Regex("""['"]goformId['"]\s*:\s*['"]([^'"]+)['"]""").findAll(allText)) {
+            goformIds.add(m.groupValues[1])
+        }
+
+        debug.appendLine("\n  All goformIds found: ${goformIds.joinToString(", ")}")
+
+        // ابحث عن معاملات MAC
+        val macParams = mutableSetOf<String>()
+        for (m in Regex("""['"]([a-zA-Z_]*[Mm][Aa][Cc][a-zA-Z_]*[Ll]ist[a-zA-Z_]*)['"]""").findAll(allText)) {
+            macParams.add(m.groupValues[1])
+        }
+        for (m in Regex("""['"]([a-zA-Z_]*[Ff]ilter[a-zA-Z_]*[Mm]ac[a-zA-Z_]*)['"]""").findAll(allText)) {
+            macParams.add(m.groupValues[1])
+        }
+        for (m in Regex("""['"]([a-zA-Z_]*[Bb]locked[a-zA-Z_]*[Ll]ist[a-zA-Z_]*)['"]""").findAll(allText)) {
+            macParams.add(m.groupValues[1])
+        }
+        for (m in Regex("""['"]([a-zA-Z_]*[Dd]eny[a-zA-Z_]*[Ll]ist[a-zA-Z_]*)['"]""").findAll(allText)) {
+            macParams.add(m.groupValues[1])
+        }
+
+        debug.appendLine("  All mac params found: ${macParams.joinToString(", ")}")
+
+        // ابحث عن أسماء معاملات في setMacFilter calls
+        for (m in Regex("""\.\w+\(\s*\{[^}]*mac_filter_list""", RegexOption.IGNORE_CASE).findAll(allText)) {
+            debug.appendLine("  Found pattern: ${m.value.take(100)}")
+        }
+
+        // ابحث عن أي شيء يحتوي "filter" و "mac" معًا
+        for (m in Regex("""['"](SET_[A-Z_]*MAC[A-Z_]*FILTER[A-Z_]*)['"]""").findAll(allText)) {
+            goformIds.add(m.groupValues[1])
+        }
+        for (m in Regex("""['"](SET_[A-Z_]*FILTER[A-Z_]*MAC[A-Z_]*)['"]""").findAll(allText)) {
+            goformIds.add(m.groupValues[1])
+        }
+
+        // إنشاء أوامر من الاكتشاف
+        if (macParams.isEmpty()) {
+            macParams.addAll(listOf("mac_filter_list", "MAC_Filter_list", "macFilterList"))
+        }
+
+        for (id in goformIds) {
+            for (param in macParams) {
+                cmds.add(DiscoveredCmd(id, param))
+            }
+        }
+
+        debug.appendLine("  Commands to try: ${cmds.size}")
+        return cmds
     }
+
+    private data class DiscoveredCmd(val goformId: String, val paramName: String)
 
     suspend fun unblockDevice(mac: String, currentBlockedList: List<String>): Result<String> {
         return try {
@@ -552,16 +440,149 @@ class RouterRepository(private val storage: SecureStorage) {
                     val r = RetrofitClient.getApi().getMacFilterList()
                     debug.appendLine("MAC filter: ${r.body()?.string()}")
                 } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
-                debug.appendLine("\n--- ip neigh ---")
-                try {
-                    val p = Runtime.getRuntime().exec(arrayOf("sh", "-c", "ip neigh"))
-                    val output = BufferedReader(InputStreamReader(p.inputStream)).readText()
-                    p.waitFor()
-                    debug.appendLine(output.take(500))
-                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
+                debug.appendLine("\n--- Discover commands ---")
+                discoverFromPages(storage.getRouterIp(), debug)
                 Result.success(debug.toString())
             }
-        } catch (e: Exception) { Result.failure(Exception("Test failed: ${e.message}")) }
+        } catch (e: Exception) { Result.failure(Exception("Test: ${e.message}")) }
+    }
+
+    private fun flushArpCache(debug: StringBuilder) {
+        try {
+            for (cmd in listOf("ip neigh flush dev wlan0", "ip -s neigh flush dev wlan0")) {
+                try {
+                    val p = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
+                    p.waitFor()
+                } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun forceArpEntries(subnet: String, debug: StringBuilder) {
+        try {
+            for (i in 1..50) {
+                for (port in listOf(80, 443)) {
+                    try {
+                        val s = java.net.Socket()
+                        s.connect(java.net.InetSocketAddress("$subnet.$i", port), 30)
+                        s.close()
+                    } catch (_: Exception) {}
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
+    private suspend fun readArpFromAllSources(debug: StringBuilder): List<Device> {
+        var d = readIpNeigh(debug); if (d.isNotEmpty()) return d
+        d = readArpFromFile(); if (d.isNotEmpty()) return d
+        d = readArpFromCommand("arp -a"); if (d.isNotEmpty()) return d
+        return readArpFromCommand("cat /proc/net/arp")
+    }
+
+    private fun readIpNeigh(debug: StringBuilder): List<Device> {
+        val devices = mutableListOf<Device>()
+        try {
+            val p = Runtime.getRuntime().exec(arrayOf("sh", "-c", "ip neigh"))
+            val r = BufferedReader(InputStreamReader(p.inputStream))
+            var line = r.readLine()
+            while (line != null) {
+                try {
+                    if (!line.uppercase().contains("FAILED") && !line.uppercase().contains("INCOMPLETE")) {
+                        parseArpLine(line)?.let { devices.add(it) }
+                    }
+                } catch (_: Exception) {}
+                line = r.readLine()
+            }
+            p.waitFor()
+            debug.appendLine("  ip neigh: ${devices.size}")
+        } catch (e: Exception) { debug.appendLine("  ip neigh: ${e.message}") }
+        return devices
+    }
+
+    private fun readArpFromFile(): List<Device> {
+        val devices = mutableListOf<Device>()
+        var r: BufferedReader? = null
+        try {
+            val f = File("/proc/net/arp")
+            if (!f.exists() || !f.canRead()) return emptyList()
+            r = java.io.BufferedReader(java.io.FileReader(f))
+            r.readLine()
+            var line = r.readLine()
+            while (line != null) {
+                try {
+                    val parts = line.trim().split("\\s+".toRegex())
+                    if (parts.size >= 4 && parts[3].uppercase() != "00:00:00:00:00:00" && parts[2] != "0x0") {
+                        devices.add(makeDevice(parts[0], parts[3].uppercase()))
+                    }
+                } catch (_: Exception) {}
+                line = r.readLine()
+            }
+        } catch (_: Exception) {}
+        finally { try { r?.close() } catch (_: Exception) {} }
+        return devices
+    }
+
+    private fun readArpFromCommand(command: String): List<Device> {
+        val devices = mutableListOf<Device>()
+        var p: Process? = null
+        try {
+            p = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
+            val r = BufferedReader(InputStreamReader(p.inputStream))
+            var line = r.readLine()
+            while (line != null) {
+                try { parseArpLine(line)?.let { devices.add(it) } } catch (_: Exception) {}
+                line = r.readLine()
+            }
+            p.waitFor()
+        } catch (_: Exception) {}
+        finally { try { p?.destroy() } catch (_: Exception) {} }
+        return devices
+    }
+
+    private fun parseArpLine(line: String): Device? {
+        val mac = Regex("[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}").find(line)?.value?.uppercase() ?: return null
+        if (mac == "00:00:00:00:00:00") return null
+        val ip = Regex("(\\d{1,3}\\.){3}\\d{1,3}").find(line)?.value ?: return null
+        return makeDevice(ip, mac)
+    }
+
+    private suspend fun readFromRouterApi(debug: StringBuilder): List<Device> {
+        try {
+            val api = RetrofitClient.getApi()
+            for (cmd in listOf("station_list", "wifi_station_list", "dhcp_list", "client_list")) {
+                try {
+                    val r = api.getGenericCmd(cmd = cmd)
+                    val b = r.body()?.string() ?: ""
+                    debug.appendLine("  [$cmd] -> ${b.take(100)}")
+                    if (b.length > 30 && !b.contains("\"\":\"$cmd\"")) {
+                        val d = parseDevices(b)
+                        if (d.isNotEmpty()) return d
+                    }
+                } catch (e: Exception) { debug.appendLine("  [$cmd] error: ${e.message}") }
+            }
+        } catch (e: Exception) { debug.appendLine("  API error: ${e.message}") }
+        return emptyList()
+    }
+
+    private fun makeDevice(ip: String, mac: String): Device {
+        val rIp = try { storage.getRouterIp() } catch (_: Exception) { "" }
+        return Device(mac = mac, ip = ip, hostname = nameFor(ip, mac), connectionType = if (ip == rIp) "Router" else "WiFi")
+    }
+
+    private fun nameFor(ip: String, mac: String): String {
+        val v = when {
+            mac.startsWith("A4:83") || mac.startsWith("F0:18") || mac.startsWith("3C:2E") -> "Apple"
+            mac.startsWith("CC:96") || mac.startsWith("58:48") || mac.startsWith("AC:CF") -> "Huawei"
+            mac.startsWith("70:F9") || mac.startsWith("94:B8") || mac.startsWith("C0:BD") -> "Samsung"
+            mac.startsWith("6C:B0") || mac.startsWith("54:FA") || mac.startsWith("AC:F7") -> "Xiaomi"
+            mac.startsWith("58:7F") || mac.startsWith("74:51") || mac.startsWith("50:64") -> "Xiaomi"
+            mac.startsWith("00:16") || mac.startsWith("50:C7") || mac.startsWith("EC:08") -> "TP-Link"
+            mac.startsWith("88:66") || mac.startsWith("F4:F5") -> "Google"
+            mac.startsWith("00:21") -> "ZTE"
+            else -> ""
+        }
+        val s = ip.substringAfterLast(".")
+        return when { v.isNotBlank() -> "$v ($s)"; s == "1" -> "الراوتر"; else -> "جهاز .$s" }
     }
 
     suspend fun logout() {
@@ -583,11 +604,9 @@ class RouterRepository(private val storage: SecureStorage) {
 
     private fun parseDevices(raw: String): List<Device> {
         try {
-            val macPattern = Regex("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}")
-            val ipPattern = Regex("(\\d{1,3}\\.){3}\\d{1,3}")
-            val macs = macPattern.findAll(raw).map { it.value.uppercase() }.distinct().toList()
+            val macs = Regex("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}").findAll(raw).map { it.value.uppercase() }.distinct().toList()
             if (macs.isEmpty()) return emptyList()
-            val ips = ipPattern.findAll(raw).map { it.value }.toList()
+            val ips = Regex("(\\d{1,3}\\.){3}\\d{1,3}").findAll(raw).map { it.value }.toList()
             return macs.mapIndexed { i, mac -> Device(mac = mac, ip = ips.getOrNull(i) ?: "", hostname = "جهاز ${i + 1}", connectionType = "WiFi") }
         } catch (_: Exception) { return emptyList() }
     }
