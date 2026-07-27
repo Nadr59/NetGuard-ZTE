@@ -14,6 +14,7 @@ import retrofit2.Response
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 class RouterRepository(private val storage: SecureStorage) {
@@ -37,12 +38,31 @@ class RouterRepository(private val storage: SecureStorage) {
             .build()
     }
 
+    // ═══════════════════════════════════════════
+    // مساعدة عامة
+    // ═══════════════════════════════════════════
+
     private fun fetchUrl(url: String, cookies: String): String {
         return try {
             val request = Request.Builder().url(url).addHeader("Cookie", cookies).build()
             httpClient.newCall(request).execute().body?.string() ?: ""
         } catch (_: Exception) { "" }
     }
+
+    private fun encodeParam(value: String): String {
+        return URLEncoder.encode(value, "UTF-8")
+    }
+
+    private fun isSuccess(body: String): Boolean {
+        return body.contains("\"result\":\"success\"") ||
+                body.contains("\"result\":0") ||
+                body.contains("\"result\":\"0\"") ||
+                body.contains("successful")
+    }
+
+    // ═══════════════════════════════════════════
+    // تسجيل الدخول
+    // ═══════════════════════════════════════════
 
     suspend fun login(
         routerIp: String,
@@ -96,6 +116,10 @@ class RouterRepository(private val storage: SecureStorage) {
         }
     }
 
+    // ═══════════════════════════════════════════
+    // جلب الأجهزة المتصلة
+    // ═══════════════════════════════════════════
+
     suspend fun getConnectedDevices(): Result<List<Device>> {
         return try {
             withContext(Dispatchers.IO) {
@@ -134,278 +158,459 @@ class RouterRepository(private val storage: SecureStorage) {
         }
     }
 
-    // ═══════════════════════════════════════════
-    // حظر — اكتشاف من service.js
-    // ═══════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════
+    // حظر جهاز — goformId: setDeviceAccessControlList (من service.js)
+    // ═══════════════════════════════════════════════════════════════════
+
     suspend fun blockDevice(mac: String, currentBlockedList: List<String>): Result<String> {
         return try {
             withContext(Dispatchers.IO) {
                 val api = RetrofitClient.getApi()
                 val debug = StringBuilder()
-                val newList = (currentBlockedList + mac.uppercase()).joinToString(";")
-                val routerIp = storage.getRouterIp()
-                val cookies = RetrofitClient.getCookiesString()
+                val macUpper = mac.uppercase().trim()
 
-                debug.appendLine("=== BLOCK $mac ===")
+                debug.appendLine("=== BLOCK $macUpper ===")
 
-                // ═══ اسحب service.js ← هنا كل goformIds ═══
-                debug.appendLine("\n=== FETCH SERVICE.JS ===")
-                val serviceFiles = listOf(
-                    "js/service.js",
-                    "js/service/service.js",
-                    "js/services/service.js",
-                    "js/api.js",
-                    "js/service/api.js",
-                    "js/common.js",
-                    "js/util.js",
-                    "js/utils.js",
-                    "js/service/utilService.js"
-                )
+                // ─── الخطوة 1: اقرأ القائمة السوداء الحالية من الراوتر ───
+                debug.appendLine("\n--- Step 1: Read current ACL ---")
+                val currentAcl = readCurrentACL(api, debug)
 
-                val allContent = StringBuilder()
+                val currentAclMode = currentAcl["AclMode"] ?: "0"
+                val currentBlackListRaw = currentAcl["BlackMacList"] ?: ""
+                debug.appendLine("Current AclMode: $currentAclMode")
+                debug.appendLine("Current BlackMacList: $currentBlackListRaw")
 
-                // اسحب config.js أولاً (فيه إعدادات مهمة)
-                val configJs = fetchUrl("http://$routerIp/js/config/config.js", cookies)
-                if (configJs.length > 100) {
-                    debug.appendLine("config.js: ${configJs.length} chars")
-                    debug.appendLine("Full config.js:\n$configJs")
-                    allContent.appendLine(configJs)
-                }
-
-                // ابحث عن service.js
-                for (sf in serviceFiles) {
-                    val content = fetchUrl("http://$routerIp/$sf", cookies)
-                    if (content.length > 100) {
-                        debug.appendLine("\n$sf: ${content.length} chars")
-                        debug.appendLine("Full content:\n$content")
-                        allContent.appendLine(content)
+                // استخراج عناوين MAC الموجودة فعلياً
+                val existingMacs = currentBlackListRaw
+                    .split(";")
+                    .map { it.trim().uppercase() }
+                    .filter {
+                        it.isNotEmpty() &&
+                        it.matches(Regex("([0-9A-F]{2}:){5}[0-9A-F]{2}"))
                     }
+                    .toMutableList()
+
+                debug.appendLine("Parsed existing MACs: $existingMacs")
+
+                // ─── الخطوة 2: أضف MAC الجديد إذا لم يكن موجوداً ───
+                debug.appendLine("\n--- Step 2: Add MAC to list ---")
+                if (macUpper !in existingMacs) {
+                    existingMacs.add(macUpper)
+                    debug.appendLine("Added $macUpper to list")
+                } else {
+                    debug.appendLine("$macUpper already in list")
                 }
 
-                // ابحث عن service في index.html
-                val indexHtml = fetchUrl("http://$routerIp/index.html", cookies)
-                // استخرج كل data-requires أو module paths
-                val requirePattern = Regex("""['"]([^'"]*service[^'"]*)['"]""", RegexOption.IGNORE_CASE)
-                for (m in requirePattern.findAll(indexHtml)) {
-                    val path = m.groupValues[1]
-                    if (path.endsWith(".js") || (!path.contains(" ") && path.length < 50)) {
-                        val url = if (path.startsWith("http")) path else "http://$routerIp/js/$path"
-                        val content = fetchUrl(url, cookies)
-                        if (content.length > 100) {
-                            debug.appendLine("\nDiscovered: $path -> ${content.length} chars")
-                            debug.appendLine("Content:\n$content")
-                            allContent.appendLine(content)
-                        }
-                    }
+                val newBlackList = existingMacs.joinToString(";") + ";"
+                debug.appendLine("New BlackMacList: $newBlackList")
+
+                // ─── الخطوة 3: أرسل أمر setDeviceAccessControlList ───
+                // goformId الصحيح من service.js دوال l_() و p_()
+                debug.appendLine("\n--- Step 3: Send block command ---")
+
+                val body = buildString {
+                    append("isTest=false")
+                    append("&goformId=setDeviceAccessControlList")
+                    append("&AclMode=2")
+                    append("&BlackMacList=${encodeParam(newBlackList)}")
+                    append("&WhiteMacList=")
+                    append("&WhiteNameList=")
+                    append("&BlackNameList=")
                 }
 
-                // ابحث عن service في main.js
-                val mainJs = fetchUrl("http://$routerIp/js/main.js", cookies)
-                val mainRequires = Regex("""['"]([^'"]+)['"]""").findAll(mainJs)
-                for (m in mainRequires) {
-                    val path = m.groupValues[1]
-                    if (path.contains("service") || path.contains("api") || path.contains("util")) {
-                        val url = "http://$routerIp/js/$path.js"
-                        val content = fetchUrl(url, cookies)
-                        if (content.length > 100) {
-                            debug.appendLine("\nFrom main.js: $path -> ${content.length} chars")
-                            debug.appendLine("Content:\n$content")
-                            allContent.appendLine(content)
-                        }
-                    }
-                }
+                debug.appendLine("Request: POST /goform/goform_set_cmd_process")
+                debug.appendLine("Body: $body")
 
-                // اسحب statusBar.js كامل (فيه أزرار الحظر)
-                val statusBarJs = fetchUrl("http://$routerIp/js/status/statusBar.js", cookies)
-                if (statusBarJs.length > 100) {
-                    debug.appendLine("\nstatusBar.js: ${statusBarJs.length} chars")
-                    debug.appendLine("Full content:\n$statusBarJs")
-                    allContent.appendLine(statusBarJs)
-                }
+                var commandSucceeded = false
+                var responseBody = ""
 
-                // ابحث عن service في كل الملفات المكتشفة
-                val foundPaths = mutableSetOf<String>()
-                for (m in Regex("""['"]([a-zA-Z/._-]*service[a-zA-Z/._-]*)['"]""", RegexOption.IGNORE_CASE).findAll(allContent.toString())) {
-                    val p = m.groupValues[1]
-                    if (p.endsWith(".js") || (!p.contains(" ") && !p.contains("(") && p.length < 40)) {
-                        foundPaths.add(p)
-                    }
-                }
-
-                debug.appendLine("\nService paths found: ${foundPaths.joinToString(", ")}")
-
-                for (path in foundPaths) {
-                    val url = if (path.startsWith("http")) path
-                    else if (path.endsWith(".js")) "http://$routerIp/js/$path"
-                    else "http://$routerIp/js/$path.js"
-                    val content = fetchUrl(url, cookies)
-                    if (content.length > 100 && !content.contains("Document Error")) {
-                        debug.appendLine("\n$path: ${content.length} chars")
-                        debug.appendLine("Content:\n$content")
-                        allContent.appendLine(content)
-                    }
-                }
-
-                // ═══ حلل المحتوى ═══
-                debug.appendLine("\n=== ANALYZE ===")
-                val fullText = allContent.toString()
-
-                val goformIds = mutableSetOf<String>()
-                val macParams = mutableSetOf<String>()
-
-                // ابحث عن goformId
-                for (m in Regex("""['"](SET_[A-Z_]+)['"]""").findAll(fullText)) {
-                    goformIds.add(m.groupValues[1])
-                }
-                for (m in Regex("""goformId['"]?\s*[=:]\s*['"]?([A-Z_a-z]+)['"]?""").findAll(fullText)) {
-                    goformIds.add(m.groupValues[1])
-                }
-                for (m in Regex("""['"]goformId['"]\s*:\s*['"]([^'"]+)['"]""").findAll(fullText)) {
-                    goformIds.add(m.groupValues[1])
-                }
-
-                // ابحث عن معاملات MAC
-                for (m in Regex("""['"]([a-zA-Z_]*[Mm][Aa][Cc][a-zA-Z_]*)['"]""").findAll(fullText)) {
-                    val p = m.groupValues[1]
-                    if (p.length in 4..40) macParams.add(p)
-                }
-                for (m in Regex("""['"]([a-zA-Z_]*[Ff]ilter[a-zA-Z_]*)['"]""").findAll(fullText)) {
-                    val p = m.groupValues[1]
-                    if (p.length in 4..40) macParams.add(p)
-                }
-
-                debug.appendLine("goformIds: ${goformIds.joinToString(", ")}")
-                debug.appendLine("macParams: ${macParams.joinToString(", ")}")
-
-                // ═══ جرب الأوامر ═══
-                debug.appendLine("\n=== TRY COMMANDS ===")
-                var success = false
-
-                goformIds.addAll(listOf(
-                    "SET_WIFI_MAC_FILTER", "SET_WIFI_AP_MAC_FILTER", "SET_MAC_FILTER"
-                ))
-                if (macParams.isEmpty()) {
-                    macParams.addAll(listOf(
-                        "mac_filter_list", "MAC_Filter_list",
-                        "macFilterList", "filterMacList",
-                        "macfilter_addr", "deny_list"
-                    ))
-                }
-
-                for (id in goformIds) {
-                    if (success) break
-                    for (param in macParams) {
-                        if (success) break
-                        try {
-                            val body = "isTest=false&goformId=$id&$param=$newList"
-                            val r = api.postRaw(body.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
-                            val b = r.body()?.string() ?: ""
-                            debug.appendLine("  $id/$param: ${b.take(80)}")
-                            if (isSuccess(b)) { debug.appendLine("  ✅ SUCCESS!"); success = true }
-                        } catch (e: Exception) { debug.appendLine("  Error: ${e.message}") }
-
-                        try {
-                            val body = "isTest=false&goformId=$id&mac_filter_enabled=1&mac_filter_mode=0&$param=$newList"
-                            val r = api.postRaw(body.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
-                            val b = r.body()?.string() ?: ""
-                            debug.appendLine("  $id/$param+enable: ${b.take(80)}")
-                            if (isSuccess(b)) { debug.appendLine("  ✅ SUCCESS!"); success = true }
-                        } catch (e: Exception) { debug.appendLine("  Error: ${e.message}") }
-                    }
-                }
-
-                // ═══ تحقق ═══
-                debug.appendLine("\n=== VERIFY ===")
-                var verified = false
                 try {
-                    Thread.sleep(1000)
-                    val r = api.getMacFilterList()
-                    val b = r.body()?.string() ?: ""
-                    debug.appendLine("Filter: $b")
-                    verified = b.contains(mac, ignoreCase = true)
-                    debug.appendLine(if (verified) "✅ MAC in filter!" else "❌ MAC NOT in filter")
-                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
+                    val r = api.postRaw(
+                        body.toRequestBody(
+                            "application/x-www-form-urlencoded".toMediaType()
+                        )
+                    )
+                    responseBody = r.body()?.string() ?: ""
+                    debug.appendLine("Response: $responseBody")
 
-                lastRawResponse = debug.toString()
-                allCommandsDebug = debug.toString()
+                    if (isSuccess(responseBody)) {
+                        debug.appendLine("✅ Command accepted by router")
+                        commandSucceeded = true
+                    } else {
+                        debug.appendLine("❌ Command rejected: $responseBody")
+                    }
+                } catch (e: Exception) {
+                    debug.appendLine("POST error: ${e.message}")
+                }
 
-                if (verified) Result.success("تم حظر الجهاز")
-                else Result.failure(Exception("فشل الحظر"))
+                // ─── الخطوة 4: تحقق من القائمة بعد الإرسال ───
+                debug.appendLine("\n--- Step 4: Verify ---")
+
+                if (commandSucceeded) {
+                    Thread.sleep(1500)
+                    val verifyAcl = readCurrentACL(api, debug)
+                    val verifyBlackList = verifyAcl["BlackMacList"] ?: ""
+                    val verifyAclMode = verifyAcl["AclMode"] ?: "0"
+
+                    debug.appendLine("Verified AclMode: $verifyAclMode")
+                    debug.appendLine("Verified BlackMacList: $verifyBlackList")
+
+                    val isInBlacklist = verifyBlackList.uppercase().contains(macUpper)
+                    val modeIsBlacklist = verifyAclMode == "2"
+
+                    debug.appendLine("MAC in list: $isInBlacklist")
+                    debug.appendLine("Mode is blacklist: $modeIsBlacklist")
+
+                    lastRawResponse = debug.toString()
+                    allCommandsDebug = debug.toString()
+
+                    if (isInBlacklist && modeIsBlacklist) {
+                        debug.appendLine("✅ BLOCK VERIFIED SUCCESSFULLY!")
+                        return@withContext Result.success("تم حظر الجهاز $macUpper")
+                    } else if (isInBlacklist) {
+                        debug.appendLine("⚠️ MAC added but mode may not be correct")
+                        return@withContext Result.success("تم حظر الجهاز (تحقق من الوضع)")
+                    } else {
+                        debug.appendLine("❌ MAC NOT found in blacklist after command")
+                        return@withContext Result.failure(
+                            Exception("تم الإرسال لكن التحقق فشل - MAC غير موجود في القائمة")
+                        )
+                    }
+                } else {
+                    lastRawResponse = debug.toString()
+                    allCommandsDebug = debug.toString()
+                    return@withContext Result.failure(
+                        Exception("فشل الحظر: $responseBody")
+                    )
+                }
             }
-        } catch (e: Exception) { Result.failure(e) }
+        } catch (e: Exception) {
+            Result.failure(Exception("خطأ: ${e.message}"))
+        }
     }
 
-    private fun isSuccess(body: String): Boolean {
-        return body.contains("\"result\":0") || body.contains("\"result\":\"0\"") ||
-                body.contains("\"result\":\"success\"") || body.contains("successful")
-    }
+    // ═══════════════════════════════════════════════════════════════════
+    // إلغاء حظر جهاز — goformId: setDeviceAccessControlList
+    // ═══════════════════════════════════════════════════════════════════
 
     suspend fun unblockDevice(mac: String, currentBlockedList: List<String>): Result<String> {
         return try {
             withContext(Dispatchers.IO) {
                 val api = RetrofitClient.getApi()
-                val newList = currentBlockedList.filter { it.uppercase() != mac.uppercase() }.joinToString(";")
-                val r = if (newList.isEmpty()) api.disableMacFilter()
-                else api.enableMacFilter(mode = "0", macList = newList)
-                if (r.isSuccessful) Result.success("تم إلغاء الحظر")
-                else Result.failure(Exception("فشل: ${r.code()}"))
+                val debug = StringBuilder()
+                val macUpper = mac.uppercase().trim()
+
+                debug.appendLine("=== UNBLOCK $macUpper ===")
+
+                // ─── اقرأ القائمة الحالية ───
+                debug.appendLine("\n--- Read current ACL ---")
+                val currentAcl = readCurrentACL(api, debug)
+                val currentBlackListRaw = currentAcl["BlackMacList"] ?: ""
+                debug.appendLine("Current BlackMacList: $currentBlackListRaw")
+
+                // استخراج عناوين MAC الموجودة
+                val existingMacs = currentBlackListRaw
+                    .split(";")
+                    .map { it.trim().uppercase() }
+                    .filter {
+                        it.isNotEmpty() &&
+                        it.matches(Regex("([0-9A-F]{2}:){5}[0-9A-F]{2}"))
+                    }
+                    .toMutableList()
+
+                debug.appendLine("Existing MACs: $existingMacs")
+
+                // أزل MAC المطلوب
+                val removed = existingMacs.remove(macUpper)
+                debug.appendLine("Removed $macUpper: $removed")
+                debug.appendLine("Remaining MACs: $existingMacs")
+
+                // ─── حدد وضع ACL ───
+                val newAclMode: String
+                val newBlackList: String
+
+                if (existingMacs.isEmpty()) {
+                    // لا توجد أجهزة محظورة → عطّل القائمة
+                    newAclMode = "0"
+                    newBlackList = ""
+                    debug.appendLine("No more blocked devices, disabling ACL")
+                } else {
+                    newAclMode = "2"
+                    newBlackList = existingMacs.joinToString(";") + ";"
+                    debug.appendLine("Keeping blacklist with: $newBlackList")
+                }
+
+                // ─── أرسل الأمر ───
+                debug.appendLine("\n--- Send unblock command ---")
+
+                val body = buildString {
+                    append("isTest=false")
+                    append("&goformId=setDeviceAccessControlList")
+                    append("&AclMode=$newAclMode")
+                    append("&BlackMacList=${encodeParam(newBlackList)}")
+                    append("&WhiteMacList=")
+                    append("&WhiteNameList=")
+                    append("&BlackNameList=")
+                }
+
+                debug.appendLine("Body: $body")
+
+                try {
+                    val r = api.postRaw(
+                        body.toRequestBody(
+                            "application/x-www-form-urlencoded".toMediaType()
+                        )
+                    )
+                    val responseBody = r.body()?.string() ?: ""
+                    debug.appendLine("Response: $responseBody")
+
+                    lastRawResponse = debug.toString()
+                    allCommandsDebug = debug.toString()
+
+                    if (isSuccess(responseBody)) {
+                        debug.appendLine("✅ UNBLOCK SUCCESS!")
+                        return@withContext Result.success("تم إلغاء حظر الجهاز $macUpper")
+                    } else {
+                        debug.appendLine("❌ UNBLOCK FAILED")
+                        return@withContext Result.failure(Exception("فشل إلغاء الحظر: $responseBody"))
+                    }
+                } catch (e: Exception) {
+                    debug.appendLine("Error: ${e.message}")
+                    lastRawResponse = debug.toString()
+                    allCommandsDebug = debug.toString()
+                    return@withContext Result.failure(Exception("خطأ: ${e.message}"))
+                }
             }
-        } catch (e: Exception) { Result.failure(e) }
+        } catch (e: Exception) {
+            Result.failure(Exception("خطأ: ${e.message}"))
+        }
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // جلب قائمة الأجهزة المحظورة — cmd: queryDeviceAccessControlList
+    // ═══════════════════════════════════════════════════════════════════
 
     suspend fun getBlockedMacs(): Result<List<String>> {
         return try {
             withContext(Dispatchers.IO) {
-                val r = RetrofitClient.getApi().getMacFilterList()
-                if (r.isSuccessful) {
-                    val body = r.body()?.string() ?: ""
-                    Result.success("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}".toRegex().findAll(body).map { it.value.uppercase() }.toList())
-                } else Result.success(emptyList())
+                val api = RetrofitClient.getApi()
+                val debug = StringBuilder()
+
+                debug.appendLine("=== GET BLOCKED MACS ===")
+                val aclData = readCurrentACL(api, debug)
+                val blackListRaw = aclData["BlackMacList"] ?: ""
+                val aclMode = aclData["AclMode"] ?: "0"
+
+                debug.appendLine("AclMode: $aclMode")
+                debug.appendLine("BlackMacList: $blackListRaw")
+
+                val macs = blackListRaw
+                    .split(";")
+                    .map { it.trim().uppercase() }
+                    .filter {
+                        it.isNotEmpty() &&
+                        it.matches(Regex("([0-9A-F]{2}:){5}[0-9A-F]{2}"))
+                    }
+
+                debug.appendLine("Blocked MACs: $macs")
+                allCommandsDebug = debug.toString()
+
+                Result.success(macs)
             }
-        } catch (_: Exception) { Result.success(emptyList()) }
+        } catch (e: Exception) {
+            Result.failure(Exception("فشل جلب القائمة: ${e.message}"))
+        }
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // تبديل حالة الحظر (حظر/إلغاء) بطلب واحد
+    // ═══════════════════════════════════════════════════════════════════
+
+    suspend fun toggleBlock(mac: String): Result<String> {
+        return try {
+            withContext(Dispatchers.IO) {
+                val api = RetrofitClient.getApi()
+                val debug = StringBuilder()
+                val macUpper = mac.uppercase().trim()
+
+                debug.appendLine("=== TOGGLE BLOCK $macUpper ===")
+
+                // اقرأ الوضع الحالي
+                val currentAcl = readCurrentACL(api, debug)
+                val blackListRaw = currentAcl["BlackMacList"] ?: ""
+
+                val existingMacs = blackListRaw
+                    .split(";")
+                    .map { it.trim().uppercase() }
+                    .filter {
+                        it.isNotEmpty() &&
+                        it.matches(Regex("([0-9A-F]{2}:){5}[0-9A-F]{2}"))
+                    }
+                    .toMutableList()
+
+                val isCurrentlyBlocked = macUpper in existingMacs
+                debug.appendLine("Currently blocked: $isCurrentlyBlocked")
+
+                if (isCurrentlyBlocked) {
+                    // أزل من القائمة
+                    existingMacs.remove(macUpper)
+                    debug.appendLine("Removing from blacklist")
+                } else {
+                    // أضف للقائمة
+                    existingMacs.add(macUpper)
+                    debug.appendLine("Adding to blacklist")
+                }
+
+                val newAclMode = if (existingMacs.isEmpty()) "0" else "2"
+                val newBlackList = if (existingMacs.isEmpty()) ""
+                    else existingMacs.joinToString(";") + ";"
+
+                debug.appendLine("New AclMode: $newAclMode")
+                debug.appendLine("New BlackMacList: $newBlackList")
+
+                val body = buildString {
+                    append("isTest=false")
+                    append("&goformId=setDeviceAccessControlList")
+                    append("&AclMode=$newAclMode")
+                    append("&BlackMacList=${encodeParam(newBlackList)}")
+                    append("&WhiteMacList=")
+                    append("&WhiteNameList=")
+                    append("&BlackNameList=")
+                }
+
+                try {
+                    val r = api.postRaw(
+                        body.toRequestBody(
+                            "application/x-www-form-urlencoded".toMediaType()
+                        )
+                    )
+                    val responseBody = r.body()?.string() ?: ""
+                    debug.appendLine("Response: $responseBody")
+
+                    lastRawResponse = debug.toString()
+                    allCommandsDebug = debug.toString()
+
+                    if (isSuccess(responseBody)) {
+                        val action = if (isCurrentlyBlocked) "إلغاء حظر" else "حظر"
+                        debug.appendLine("✅ $action SUCCESS!")
+                        return@withContext Result.success("تم $action الجهاز $macUpper")
+                    } else {
+                        return@withContext Result.failure(Exception("فشل: $responseBody"))
+                    }
+                } catch (e: Exception) {
+                    debug.appendLine("Error: ${e.message}")
+                    lastRawResponse = debug.toString()
+                    allCommandsDebug = debug.toString()
+                    return@withContext Result.failure(Exception("خطأ: ${e.message}"))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(Exception("خطأ: ${e.message}"))
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // قراءة ACL الحالي من الراوتر
+    // cmd: queryDeviceAccessControlList (من service.js دالة d_())
+    // ═══════════════════════════════════════════════════════════════════
+
+    private suspend fun readCurrentACL(
+        api: Any,
+        debug: StringBuilder
+    ): Map<String, String> {
+        val result = mutableMapOf<String, String>()
+        try {
+            val r = RetrofitClient.getApi().getGenericCmd(
+                cmd = "queryDeviceAccessControlList"
+            )
+            val body = r.body()?.string() ?: ""
+            debug.appendLine("ACL raw response: $body")
+
+            // استخراج القيم من JSON
+            // مثال: {"AclMode":"2","BlackMacList":"AA:BB:CC:DD:EE:FF;","WhiteMacList":"","WhiteNameList":"","BlackNameList":""}
+            for (key in listOf(
+                "AclMode",
+                "BlackMacList",
+                "WhiteMacList",
+                "WhiteNameList",
+                "BlackNameList"
+            )) {
+                val pattern = Regex(""""$key"\s*:\s*"([^"]*)"""")
+                pattern.find(body)?.let {
+                    result[key] = it.groupValues[1]
+                }
+            }
+
+            // إذا لم يتم العثور على AclMode، جرب نمط آخر
+            if ("AclMode" !in result) {
+                val altPattern = Regex("""AclMode[^:]*:\s*"?(\d)"?""")
+                altPattern.find(body)?.let {
+                    result["AclMode"] = it.groupValues[1]
+                }
+            }
+
+            debug.appendLine("Parsed ACL: $result")
+        } catch (e: Exception) {
+            debug.appendLine("Read ACL error: ${e.message}")
+        }
+        return result
+    }
+
+    // ═══════════════════════════════════════════
+    // اختبار الاتصال
+    // ═══════════════════════════════════════════
 
     suspend fun testRouterConnection(): Result<String> {
         return try {
             withContext(Dispatchers.IO) {
                 val debug = StringBuilder()
-                val routerIp = storage.getRouterIp()
+                val routerIp = try { storage.getRouterIp() } catch (_: Exception) { "192.168.0.1" }
                 val cookies = RetrofitClient.getCookiesString()
 
-                debug.appendLine("=== TEST ===")
+                debug.appendLine("=== TEST CONNECTION ===")
+                debug.appendLine("Router IP: $routerIp")
 
+                // اختبار بسيط
                 try {
                     val r = RetrofitClient.getApi().getGenericCmd(cmd = "Language")
                     debug.appendLine("Language: ${r.body()?.string()}")
-                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
-
-                // ابحث عن service.js
-                debug.appendLine("\n=== FIND SERVICE.JS ===")
-                val searchPaths = listOf(
-                    "js/service.js", "js/service/service.js", "js/services/service.js",
-                    "js/api.js", "js/service/api.js", "js/common.js",
-                    "js/util.js", "js/utils.js", "js/service/utilService.js",
-                    "js/service/ajaxService.js", "js/service/httpService.js",
-                    "js/service/requestService.js", "js/service/dataService.js",
-                    "js/service/apiService.js", "js/service/restService.js"
-                )
-                for (path in searchPaths) {
-                    val content = fetchUrl("http://$routerIp/$path", cookies)
-                    if (content.length > 100) {
-                        debug.appendLine("\n✅ $path (${content.length} chars)")
-                        debug.appendLine(content.take(5000))
-                    }
+                } catch (e: Exception) {
+                    debug.appendLine("Language error: ${e.message}")
                 }
 
-                // ابحث عن config.js كامل
-                debug.appendLine("\n=== CONFIG.JS ===")
-                val configJs = fetchUrl("http://$routerIp/js/config/config.js", cookies)
-                debug.appendLine(configJs)
+                // اختبار ACL
+                debug.appendLine("\n=== TEST ACL ===")
+                try {
+                    val aclData = readCurrentACL(RetrofitClient.getApi(), debug)
+                    debug.appendLine("ACL Data: $aclData")
+                } catch (e: Exception) {
+                    debug.appendLine("ACL error: ${e.message}")
+                }
 
                 Result.success(debug.toString())
             }
-        } catch (e: Exception) { Result.failure(Exception("Test: ${e.message}")) }
+        } catch (e: Exception) {
+            Result.failure(Exception("Test: ${e.message}"))
+        }
     }
+
+    // ═══════════════════════════════════════════
+    // تسجيل الخروج
+    // ═══════════════════════════════════════════
+
+    suspend fun logout() {
+        try {
+            withContext(Dispatchers.IO) {
+                try { RetrofitClient.getApi().logout() } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+        storage.setLoggedIn(false)
+        RetrofitClient.reset()
+    }
+
+    // ═══════════════════════════════════════════
+    // أدوات مساعدة لقراءة ARP والأجهزة
+    // ═══════════════════════════════════════════
 
     private fun flushArpCache(debug: StringBuilder) {
         try {
@@ -443,7 +648,9 @@ class RouterRepository(private val storage: SecureStorage) {
             var line = r.readLine()
             while (line != null) {
                 try {
-                    if (!line.uppercase().contains("FAILED") && !line.uppercase().contains("INCOMPLETE")) {
+                    if (!line.uppercase().contains("FAILED") &&
+                        !line.uppercase().contains("INCOMPLETE")
+                    ) {
                         parseArpLine(line)?.let { devices.add(it) }
                     }
                 } catch (_: Exception) {}
@@ -460,13 +667,16 @@ class RouterRepository(private val storage: SecureStorage) {
         try {
             val f = File("/proc/net/arp")
             if (!f.exists() || !f.canRead()) return emptyList()
-            r = java.io.BufferedReader(java.io.FileReader(f))
-            r.readLine()
+            r = BufferedReader(InputStreamReader(File(f.absolutePath).inputStream()))
+            r.readLine() // skip header
             var line = r.readLine()
             while (line != null) {
                 try {
                     val parts = line.trim().split("\\s+".toRegex())
-                    if (parts.size >= 4 && parts[3].uppercase() != "00:00:00:00:00:00" && parts[2] != "0x0") {
+                    if (parts.size >= 4 &&
+                        parts[3].uppercase() != "00:00:00:00:00:00" &&
+                        parts[2] != "0x0"
+                    ) {
                         devices.add(makeDevice(parts[0], parts[3].uppercase()))
                     }
                 } catch (_: Exception) {}
@@ -495,7 +705,10 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     private fun parseArpLine(line: String): Device? {
-        val mac = Regex("[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}").find(line)?.value?.uppercase() ?: return null
+        val mac = Regex(
+            "[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-]" +
+            "[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}"
+        ).find(line)?.value?.uppercase() ?: return null
         if (mac == "00:00:00:00:00:00") return null
         val ip = Regex("(\\d{1,3}\\.){3}\\d{1,3}").find(line)?.value ?: return null
         return makeDevice(ip, mac)
@@ -504,7 +717,12 @@ class RouterRepository(private val storage: SecureStorage) {
     private suspend fun readFromRouterApi(debug: StringBuilder): List<Device> {
         try {
             val api = RetrofitClient.getApi()
-            for (cmd in listOf("station_list", "wifi_station_list", "dhcp_list", "client_list")) {
+            for (cmd in listOf(
+                "station_list",
+                "wifi_station_list",
+                "dhcp_list",
+                "client_list"
+            )) {
                 try {
                     val r = api.getGenericCmd(cmd = cmd)
                     val b = r.body()?.string() ?: ""
@@ -513,15 +731,24 @@ class RouterRepository(private val storage: SecureStorage) {
                         val d = parseDevices(b)
                         if (d.isNotEmpty()) return d
                     }
-                } catch (e: Exception) { debug.appendLine("  [$cmd] error: ${e.message}") }
+                } catch (e: Exception) {
+                    debug.appendLine("  [$cmd] error: ${e.message}")
+                }
             }
-        } catch (e: Exception) { debug.appendLine("  API error: ${e.message}") }
+        } catch (e: Exception) {
+            debug.appendLine("  API error: ${e.message}")
+        }
         return emptyList()
     }
 
     private fun makeDevice(ip: String, mac: String): Device {
         val rIp = try { storage.getRouterIp() } catch (_: Exception) { "" }
-        return Device(mac = mac, ip = ip, hostname = nameFor(ip, mac), connectionType = if (ip == rIp) "Router" else "WiFi")
+        return Device(
+            mac = mac,
+            ip = ip,
+            hostname = nameFor(ip, mac),
+            connectionType = if (ip == rIp) "Router" else "WiFi"
+        )
     }
 
     private fun nameFor(ip: String, mac: String): String {
@@ -537,20 +764,20 @@ class RouterRepository(private val storage: SecureStorage) {
             else -> ""
         }
         val s = ip.substringAfterLast(".")
-        return when { v.isNotBlank() -> "$v ($s)"; s == "1" -> "الراوتر"; else -> "جهاز .$s" }
-    }
-
-    suspend fun logout() {
-        try { withContext(Dispatchers.IO) { try { RetrofitClient.getApi().logout() } catch (_: Exception) {} } } catch (_: Exception) {}
-        storage.setLoggedIn(false)
-        RetrofitClient.reset()
+        return when {
+            v.isNotBlank() -> "$v ($s)"
+            s == "1" -> "الراوتر"
+            else -> "جهاز .$s"
+        }
     }
 
     private fun readCookies(response: Response<*>, debug: StringBuilder) {
         try {
             for (c in response.headers().values("Set-Cookie")) {
                 val parts = c.split(";")[0].split("=", limit = 2)
-                if (parts.size == 2) RetrofitClient.setSessionCookie(parts[0].trim(), parts[1].trim())
+                if (parts.size == 2) {
+                    RetrofitClient.setSessionCookie(parts[0].trim(), parts[1].trim())
+                }
             }
             cookieDebug = "Cookies: ${RetrofitClient.getCookiesString()}"
             debug.appendLine(cookieDebug)
@@ -559,10 +786,24 @@ class RouterRepository(private val storage: SecureStorage) {
 
     private fun parseDevices(raw: String): List<Device> {
         try {
-            val macs = Regex("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}").findAll(raw).map { it.value.uppercase() }.distinct().toList()
+            val macs = Regex("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}")
+                .findAll(raw)
+                .map { it.value.uppercase() }
+                .distinct()
+                .toList()
             if (macs.isEmpty()) return emptyList()
-            val ips = Regex("(\\d{1,3}\\.){3}\\d{1,3}").findAll(raw).map { it.value }.toList()
-            return macs.mapIndexed { i, mac -> Device(mac = mac, ip = ips.getOrNull(i) ?: "", hostname = "جهاز ${i + 1}", connectionType = "WiFi") }
+            val ips = Regex("(\\d{1,3}\\.){3}\\d{1,3}")
+                .findAll(raw)
+                .map { it.value }
+                .toList()
+            return macs.mapIndexed { i, mac ->
+                Device(
+                    mac = mac,
+                    ip = ips.getOrNull(i) ?: "",
+                    hostname = "جهاز ${i + 1}",
+                    connectionType = "WiFi"
+                )
+            }
         } catch (_: Exception) { return emptyList() }
     }
 }
