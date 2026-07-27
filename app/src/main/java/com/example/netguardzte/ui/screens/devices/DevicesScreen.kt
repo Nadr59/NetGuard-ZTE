@@ -54,6 +54,10 @@ import androidx.compose.ui.unit.sp
 import com.example.netguardzte.domain.model.Device
 import com.example.netguardzte.ui.WebCaptureActivity
 import com.example.netguardzte.ui.components.DeviceCard
+import androidx.compose.animation.core.*
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -133,9 +137,18 @@ fun DevicesScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
-                        CircularProgressIndicator()
-                        Spacer(Modifier.height(12.dp))
-                        Text("جاري البحث عن الأجهزة...")
+                        // بدلاً من CircularProgressIndicator()
+var dots by remember { mutableStateOf("") }
+LaunchedEffect(Unit) {
+    while (true) {
+        dots = when (dots.length) {
+            3 -> ""
+            else -> "$dots."
+        }
+        kotlinx.coroutines.delay(500)
+    }
+}
+Text("⏳ جاري التحميل$dots")
                     }
                 }
 
