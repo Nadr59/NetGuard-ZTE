@@ -324,6 +324,14 @@ private fun DebugCard(debugInfo: String, onCopy: () -> Unit, copyMessage: String
             }
 
             Spacer(Modifier.height(4.dp))
+            // في شاشة الأجهزة (DevicesScreen أو أي مكان)
+Button(onClick = {
+    context.startActivity(
+        Intent(context, WebCaptureActivity::class.java)
+    )
+}) {
+    Text("🔍 التقاط طلب الحظر")
+}
 
             SelectionContainer {
                 Text(
