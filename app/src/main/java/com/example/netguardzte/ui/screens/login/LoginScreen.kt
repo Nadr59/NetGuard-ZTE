@@ -15,7 +15,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -145,7 +144,6 @@ fun LoginScreen(
                 Spacer(Modifier.height(8.dp))
             }
 
-            // عرض الخطأ الأخير إن وجد
             if (crashInfo.isNotBlank()) {
                 Card(
                     modifier = Modifier
@@ -187,6 +185,7 @@ fun LoginScreen(
 
             Spacer(Modifier.height(16.dp))
 
+            // ═══ زر بدون CircularProgressIndicator ═══
             Button(
                 onClick = onLogin,
                 modifier = Modifier
@@ -195,13 +194,15 @@ fun LoginScreen(
                 enabled = !isLoggingIn
             ) {
                 if (isLoggingIn) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.height(24.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary
+                    Text(
+                        "⏳ جاري الاتصال...",
+                        fontWeight = FontWeight.Bold
                     )
                 } else {
-                    Text("تسجيل الدخول", fontWeight = FontWeight.Bold)
+                    Text(
+                        "تسجيل الدخول",
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }
