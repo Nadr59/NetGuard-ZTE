@@ -29,6 +29,24 @@ class RouterRepository(private val storage: SecureStorage) {
     var allCommandsDebug: String = ""
         private set
 
+    private val httpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.SECONDS)
+            .followRedirects(false)
+            .build()
+    }
+
+    private fun fetchUrl(url: String, cookies: String): String {
+        return try {
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("Cookie", cookies)
+                .build()
+            httpClient.newCall(request).execute().body?.string() ?: ""
+        } catch (_: Exception) { "" }
+    }
+
     suspend fun login(
         routerIp: String,
         username: String,
@@ -90,18 +108,13 @@ class RouterRepository(private val storage: SecureStorage) {
 
                 debug.appendLine("=== DEVICE SCAN ===")
 
-                debug.appendLine("\n--- Flush ARP ---")
                 flushArpCache(debug)
-
-                debug.appendLine("\n--- Force ARP ---")
                 forceArpEntries(subnet, debug)
 
-                debug.appendLine("\n--- Read ARP ---")
                 var devices = readArpFromAllSources(debug)
                 debug.appendLine("Found: ${devices.size}")
 
                 if (devices.isEmpty()) {
-                    debug.appendLine("\n--- Router API ---")
                     devices = readFromRouterApi(debug)
                 }
 
@@ -124,6 +137,9 @@ class RouterRepository(private val storage: SecureStorage) {
         }
     }
 
+    // ═══════════════════════════════════════════
+    // حظر — اكتشاف من RequireJS modules
+    // ═══════════════════════════════════════════
     suspend fun blockDevice(mac: String, currentBlockedList: List<String>): Result<String> {
         return try {
             withContext(Dispatchers.IO) {
@@ -134,108 +150,137 @@ class RouterRepository(private val storage: SecureStorage) {
                 val cookies = RetrofitClient.getCookiesString()
 
                 debug.appendLine("=== BLOCK $mac ===")
-                debug.appendLine("Cookies: $cookies")
 
-                // ═══ اسحب الصفحات مع Cookies ═══
-                debug.appendLine("\n=== FETCH PAGES ===")
-                val allContent = StringBuilder()
+                // ═══ الخطوة 1: اسحب index.html واستخرج RequireJS modules ═══
+                debug.appendLine("\n=== FIND MODULES ===")
+                val allJsContent = StringBuilder()
 
-                // استدعاء مباشر بدون lambda
-                val pageNames = listOf("/", "index.html", "wifi.html", "status.html")
-                for (name in pageNames) {
-                    try {
-                        val r = when (name) {
-                            "index.html" -> api.getIndexPage()
-                            "wifi.html" -> api.getWifiPage()
-                            "status.html" -> api.getStatusPage()
-                            else -> api.getMainPage()
-                        }
-                        val body = r.body()?.string() ?: ""
-                        debug.appendLine("  $name -> ${body.length} chars")
-                        if (body.length > 200) {
-                            allContent.appendLine(body)
-                            debug.appendLine("  Preview: ${body.take(200)}")
-                        }
-                    } catch (e: Exception) {
-                        debug.appendLine("  $name error: ${e.message}")
+                // اسحب index.html أولاً
+                val indexHtml = fetchUrl("http://$routerIp/index.html", cookies)
+                debug.appendLine("index.html: ${indexHtml.length} chars")
+                allJsContent.appendLine(indexHtml)
+
+                // استخرج مسارات الملفات من index.html
+                val scriptPattern = Regex("""src=['"]([^'"]+\.js[^'"]*)['"]""")
+                val scripts = scriptPattern.findAll(indexHtml).map { it.groupValues[1] }.toList()
+                debug.appendLine("Scripts found: ${scripts.joinToString(", ")}")
+
+                // استخرج data-main من RequireJS
+                val dataMainPattern = Regex("""data-main=['"]([^'"]+)['"]""")
+                val dataMain = dataMainPattern.find(indexHtml)?.groupValues?.get(1)
+                debug.appendLine("RequireJS data-main: $dataMain")
+
+                // اسحب ملفات JS المكتشفة
+                for (script in scripts) {
+                    val url = if (script.startsWith("http")) script else "http://$routerIp/$script"
+                    val content = fetchUrl(url, cookies)
+                    if (content.length > 50) {
+                        debug.appendLine("  $script -> ${content.length} chars")
+                        allJsContent.appendLine(content)
                     }
                 }
 
-                // اسحب ملفات JS مع Cookies
-                val jsFiles = listOf(
-                    "js/main.js", "js/app.js", "js/common.js",
-                    "js/config.js", "js/index.js", "js/wifi.js",
-                    "js/wlan.js", "js/settings.js", "js/security.js",
-                    "js/wireless.js", "js/advance.js", "js/goform.js",
-                    "js/mac_filter.js", "js/block.js", "js/filter.js",
-                    "static/js/main.js", "static/js/app.js",
-                    "static/js/chunk-vendors.js"
+                // ═══ اسحب RequireJS modules الشائعة ═══
+                val modulePaths = listOf(
+                    // config modules
+                    "config/config.js", "config/menu.js", "config/wifiConfig.js",
+                    "config/serverConfig.js", "config/settings.js",
+                    // status modules
+                    "status/statusBar.js", "status/status.js",
+                    // wifi/wlan modules
+                    "wifi/wifi.js", "wifi/macFilter.js", "wifi/wifiSettings.js",
+                    "wifi/wifiSecurity.js", "wifi/advance.js",
+                    "wlan/wlan.js", "wlan/macFilter.js", "wlan/wlanSettings.js",
+                    "wlan/security.js", "wlan/advance.js",
+                    "wlanMultiMacFilter/wlanMultiMacFilter.js",
+                    "macFilter/macFilter.js",
+                    "mac_filter/mac_filter.js",
+                    // settings modules
+                    "settings/wifi.js", "settings/wlan.js", "settings/security.js",
+                    "settings/advance.js", "settings/macFilter.js",
+                    // security modules
+                    "security/security.js", "security/macFilter.js",
+                    // access control
+                    "accessControl/accessControl.js", "access_control/access_control.js",
+                    // other common modules
+                    "router.js", "login.js", "language.js", "logout.js",
+                    "firewall/firewall.js", "parentalControl/parentalControl.js",
+                    // tmpl templates
+                    "../tmpl/wifi.html", "../tmpl/wlan.html",
+                    "../tmpl/macFilter.html", "../tmpl/security.html",
+                    "../tmpl/advance.html", "../tmpl/settings.html",
+                    "../tmpl/accessControl.html", "../tmpl/parental.html"
                 )
 
-                for (js in jsFiles) {
-                    try {
-                        val url = "http://$routerIp/$js"
-                        val request = Request.Builder()
-                            .url(url)
-                            .addHeader("Cookie", cookies)
-                            .build()
-                        val client = OkHttpClient.Builder()
-                            .connectTimeout(3, TimeUnit.SECONDS)
-                            .readTimeout(3, TimeUnit.SECONDS)
-                            .build()
-                        val response = client.newCall(request).execute()
-                        val content = response.body?.string() ?: ""
-                        if (content.length > 200) {
-                            debug.appendLine("  /$js -> ${content.length} chars")
-                            debug.appendLine("  Preview: ${content.take(300)}")
-                            allContent.appendLine(content)
-                        }
-                    } catch (_: Exception) {}
+                for (mod in modulePaths) {
+                    val url = "http://$routerIp/js/$mod"
+                    val content = fetchUrl(url, cookies)
+                    if (content.length > 100) {
+                        debug.appendLine("  js/$mod -> ${content.length} chars")
+                        debug.appendLine("  Preview: ${content.take(200)}")
+                        allJsContent.appendLine(content)
+                    }
                 }
 
-                // ═══ حلل المحتوى ═══
+                // ═══ الخطوة 2: حلل كل المحتوى ═══
                 debug.appendLine("\n=== ANALYZE ===")
-                val fullText = allContent.toString()
+                val fullText = allJsContent.toString()
 
                 val goformIds = mutableSetOf<String>()
                 val macParams = mutableSetOf<String>()
 
+                // ابحث عن SET_ commands
                 for (m in Regex("""['"](SET_[A-Z_]+)['"]""").findAll(fullText)) {
                     goformIds.add(m.groupValues[1])
                 }
                 for (m in Regex("""goformId['"]*\s*[=:]\s*['"]*([A-Z_a-z]+)['"]*""").findAll(fullText)) {
                     goformIds.add(m.groupValues[1])
                 }
-
-                for (m in Regex("""['"]([a-zA-Z_]*[Mm][Aa][Cc][a-zA-Z_]*)['"]""").findAll(fullText)) {
-                    val p = m.groupValues[1]
-                    if (p.length > 3 && p.length < 50) macParams.add(p)
-                }
-                for (m in Regex("""['"]([a-zA-Z_]*[Ff]ilter[a-zA-Z_]*)['"]""").findAll(fullText)) {
-                    val p = m.groupValues[1]
-                    if (p.length > 3 && p.length < 50) macParams.add(p)
-                }
-                for (m in Regex("""['"]([a-zA-Z_]*[Bb]lock[a-zA-Z_]*)['"]""").findAll(fullText)) {
-                    val p = m.groupValues[1]
-                    if (p.length > 3 && p.length < 50) macParams.add(p)
+                for (m in Regex("""goformId\s*=\s*([A-Z_]+)""").findAll(fullText)) {
+                    goformIds.add(m.groupValues[1])
                 }
 
-                debug.appendLine("goformIds: ${goformIds.joinToString(", ")}")
+                // ابحث عن معاملات MAC/filter
+                val paramPatterns = listOf(
+                    Regex("""['"]([a-zA-Z_]*[Mm][Aa][Cc][a-zA-Z_]*[Ll]ist[a-zA-Z_]*)['"]"""),
+                    Regex("""['"]([a-zA-Z_]*[Ff]ilter[a-zA-Z_]*[Mm]ac[a-zA-Z_]*)['"]"""),
+                    Regex("""['"]([a-zA-Z_]*[Mm]ac[Ff]ilter[a-zA-Z_]*)['"]"""),
+                    Regex("""['"]([a-zA-Z_]*[Bb]locked[a-zA-Z_]*[Ll]ist[a-zA-Z_]*)['"]"""),
+                    Regex("""['"]([a-zA-Z_]*[Dd]eny[a-zA-Z_]*[Ll]ist[a-zA-Z_]*)['"]"""),
+                    Regex("""['"]([a-zA-Z_]*[Aa]ccess[Cc]ontrol[a-zA-Z_]*)['"]"""),
+                    Regex("""['"](mac_filter_enabled)['"]"""),
+                    Regex("""['"](mac_filter_mode)['"]""")
+                )
+                for (p in paramPatterns) {
+                    for (m in p.findAll(fullText)) {
+                        val param = m.groupValues[1]
+                        if (param.length > 3 && param.length < 50) macParams.add(param)
+                    }
+                }
+
+                // ابحث عن fetch/ajax calls مع MAC
+                for (m in Regex("""(?:fetch|ajax|post|get)\s*\([^)]*['"](.*?mac.*?)['"]""", RegexOption.IGNORE_CASE).findAll(fullText)) {
+                    debug.appendLine("  Fetch call: ${m.groupValues[1]}")
+                }
+
+                debug.appendLine("\ngoformIds: ${goformIds.joinToString(", ")}")
                 debug.appendLine("macParams: ${macParams.joinToString(", ")}")
 
-                // ═══ جرب الأوامر ═══
+                // ═══ الخطوة 3: جرب الأوامر ═══
                 debug.appendLine("\n=== TRY COMMANDS ===")
                 var success = false
 
                 goformIds.addAll(listOf(
-                    "SET_WIFI_MAC_FILTER",
-                    "SET_WIFI_AP_MAC_FILTER",
-                    "SET_MAC_FILTER"
+                    "SET_WIFI_MAC_FILTER", "SET_WIFI_AP_MAC_FILTER",
+                    "SET_MAC_FILTER", "ACCESS_CONTROL_SET",
+                    "ACCESS_CONTROL_ADD", "SET_PARENTAL_CONTROL",
+                    "SET_BLOCKED_DEVICES"
                 ))
                 if (macParams.isEmpty()) {
                     macParams.addAll(listOf(
                         "mac_filter_list", "MAC_Filter_list",
-                        "macFilterList", "filterMacList"
+                        "macFilterList", "filterMacList",
+                        "macfilter_addr", "deny_list"
                     ))
                 }
 
@@ -244,30 +289,19 @@ class RouterRepository(private val storage: SecureStorage) {
                     for (param in macParams) {
                         if (success) break
 
-                        // شكل 1: form
                         try {
                             val body = "isTest=false&goformId=$id&$param=$newList"
                             val r = api.postRaw(body.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
                             val b = r.body()?.string() ?: ""
-                            debug.appendLine("  $id/$param form: ${r.code()} ${b.take(100)}")
+                            debug.appendLine("  $id/$param: ${b.take(80)}")
                             if (isSuccess(b)) { debug.appendLine("  ✅ SUCCESS!"); success = true }
                         } catch (e: Exception) { debug.appendLine("  Error: ${e.message}") }
 
-                        // شكل 2: مع تفعيل
                         try {
                             val body = "isTest=false&goformId=$id&mac_filter_enabled=1&mac_filter_mode=0&$param=$newList"
                             val r = api.postRaw(body.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
                             val b = r.body()?.string() ?: ""
-                            debug.appendLine("  $id/$param enabled: ${r.code()} ${b.take(100)}")
-                            if (isSuccess(b)) { debug.appendLine("  ✅ SUCCESS!"); success = true }
-                        } catch (e: Exception) { debug.appendLine("  Error: ${e.message}") }
-
-                        // شكل 3: JSON
-                        try {
-                            val json = """{"isTest":"false","goformId":"$id","$param":"$newList"}"""
-                            val r = api.postRaw(json.toRequestBody("application/json; charset=utf-8".toMediaType()))
-                            val b = r.body()?.string() ?: ""
-                            debug.appendLine("  $id/$param json: ${r.code()} ${b.take(100)}")
+                            debug.appendLine("  $id/$param+enable: ${b.take(80)}")
                             if (isSuccess(b)) { debug.appendLine("  ✅ SUCCESS!"); success = true }
                         } catch (e: Exception) { debug.appendLine("  Error: ${e.message}") }
                     }
@@ -333,66 +367,51 @@ class RouterRepository(private val storage: SecureStorage) {
                 val cookies = RetrofitClient.getCookiesString()
 
                 debug.appendLine("=== TEST ===")
-                debug.appendLine("Cookies: $cookies")
 
                 try {
                     val r = api.getGenericCmd(cmd = "Language")
                     debug.appendLine("Language: ${r.body()?.string()}")
                 } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
 
+                // اسحب index.html
                 debug.appendLine("\n--- index.html ---")
-                try {
-                    val r = api.getIndexPage()
-                    val body = r.body()?.string() ?: ""
-                    debug.appendLine("Length: ${body.length}")
-                    debug.appendLine("First 500:\n${body.take(500)}")
-                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
+                val html = fetchUrl("http://$routerIp/index.html", cookies)
+                debug.appendLine("Length: ${html.length}")
 
-                debug.appendLine("\n--- js/main.js ---")
-                try {
-                    val request = Request.Builder()
-                        .url("http://$routerIp/js/main.js")
-                        .addHeader("Cookie", cookies)
-                        .build()
-                    val client = OkHttpClient.Builder()
-                        .connectTimeout(5, TimeUnit.SECONDS)
-                        .readTimeout(5, TimeUnit.SECONDS)
-                        .build()
-                    val response = client.newCall(request).execute()
-                    val body = response.body?.string() ?: ""
-                    debug.appendLine("Length: ${body.length}")
-                    debug.appendLine("Content:\n${body.take(2000)}")
-                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
+                // استخرج scripts
+                val scripts = Regex("""src=['"]([^'"]+\.js[^'"]*)['"]""").findAll(html).map { it.groupValues[1] }.toList()
+                debug.appendLine("Scripts: ${scripts.joinToString(", ")}")
 
-                debug.appendLine("\n--- js/app.js ---")
-                try {
-                    val request = Request.Builder()
-                        .url("http://$routerIp/js/app.js")
-                        .addHeader("Cookie", cookies)
-                        .build()
-                    val client = OkHttpClient.Builder()
-                        .connectTimeout(5, TimeUnit.SECONDS)
-                        .readTimeout(5, TimeUnit.SECONDS)
-                        .build()
-                    val response = client.newCall(request).execute()
-                    val body = response.body?.string() ?: ""
-                    debug.appendLine("Length: ${body.length}")
-                    debug.appendLine("Content:\n${body}")
-                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
+                // اسحب كل module
+                debug.appendLine("\n--- Modules ---")
+                val mods = listOf(
+                    "config/config.js", "config/menu.js", "router.js",
+                    "wifi/wifi.js", "wifi/macFilter.js",
+                    "wlan/wlan.js", "wlan/macFilter.js",
+                    "macFilter/macFilter.js", "mac_filter/mac_filter.js",
+                    "security/security.js", "accessControl/accessControl.js",
+                    "settings/wifi.js", "settings/wlan.js",
+                    "status/statusBar.js", "login.js", "language.js"
+                )
+                for (mod in mods) {
+                    val content = fetchUrl("http://$routerIp/js/$mod", cookies)
+                    if (content.length > 50) {
+                        debug.appendLine("\n=== js/$mod (${content.length} chars) ===")
+                        debug.appendLine(content.take(3000))
+                    }
+                }
 
                 Result.success(debug.toString())
             }
         } catch (e: Exception) { Result.failure(Exception("Test: ${e.message}")) }
     }
 
+    // ═══ باقي الدوال ═══
+
     private fun flushArpCache(debug: StringBuilder) {
         try {
-            for (cmd in listOf("ip neigh flush dev wlan0")) {
-                try {
-                    val p = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
-                    p.waitFor()
-                } catch (_: Exception) {}
-            }
+            val p = Runtime.getRuntime().exec(arrayOf("sh", "-c", "ip neigh flush dev wlan0"))
+            p.waitFor()
         } catch (_: Exception) {}
     }
 
@@ -432,8 +451,7 @@ class RouterRepository(private val storage: SecureStorage) {
                 line = r.readLine()
             }
             p.waitFor()
-            debug.appendLine("  ip neigh: ${devices.size}")
-        } catch (e: Exception) { debug.appendLine("  ip neigh: ${e.message}") }
+        } catch (_: Exception) {}
         return devices
     }
 
