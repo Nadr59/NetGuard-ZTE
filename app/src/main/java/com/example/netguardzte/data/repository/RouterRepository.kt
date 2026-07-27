@@ -124,43 +124,37 @@ class RouterRepository(private val storage: SecureStorage) {
         }
     }
 
-    // ═══════════════════════════════════════════
-    // حظر — مع Cookies + اكتشاف حقيقي
-    // ═══════════════════════════════════════════
     suspend fun blockDevice(mac: String, currentBlockedList: List<String>): Result<String> {
         return try {
             withContext(Dispatchers.IO) {
                 val api = RetrofitClient.getApi()
                 val debug = StringBuilder()
                 val newList = (currentBlockedList + mac.uppercase()).joinToString(";")
-
-                debug.appendLine("=== BLOCK $mac ===")
-                debug.appendLine("Cookies: ${RetrofitClient.getCookiesString()}")
-
-                // ═══ الخطوة 1: اسحب الصفحات مع Cookies ═══
-                debug.appendLine("\n=== FETCH PAGES WITH COOKIES ===")
                 val routerIp = storage.getRouterIp()
                 val cookies = RetrofitClient.getCookiesString()
+
+                debug.appendLine("=== BLOCK $mac ===")
+                debug.appendLine("Cookies: $cookies")
+
+                // ═══ اسحب الصفحات مع Cookies ═══
+                debug.appendLine("\n=== FETCH PAGES ===")
                 val allContent = StringBuilder()
 
-                // اسحب عبر Retrofit (لديه cookies)
-                val pagesToFetch = mapOf(
-                    "index.html" to { api.getIndexPage() },
-                    "wifi.html" to { api.getWifiPage() },
-                    "status.html" to { api.getStatusPage() },
-                    "/" to { api.getMainPage() }
-                )
-
-                for ((name, fetcher) in pagesToFetch) {
+                // استدعاء مباشر بدون lambda
+                val pageNames = listOf("/", "index.html", "wifi.html", "status.html")
+                for (name in pageNames) {
                     try {
-                        val r = fetcher()
+                        val r = when (name) {
+                            "index.html" -> api.getIndexPage()
+                            "wifi.html" -> api.getWifiPage()
+                            "status.html" -> api.getStatusPage()
+                            else -> api.getMainPage()
+                        }
                         val body = r.body()?.string() ?: ""
-                        debug.appendLine("  $name -> ${body.length} chars (code: ${r.code()})")
+                        debug.appendLine("  $name -> ${body.length} chars")
                         if (body.length > 200) {
                             allContent.appendLine(body)
-                            debug.appendLine("  Content preview: ${body.take(300)}")
-                        } else {
-                            debug.appendLine("  Content: $body")
+                            debug.appendLine("  Preview: ${body.take(200)}")
                         }
                     } catch (e: Exception) {
                         debug.appendLine("  $name error: ${e.message}")
@@ -193,20 +187,19 @@ class RouterRepository(private val storage: SecureStorage) {
                         val content = response.body?.string() ?: ""
                         if (content.length > 200) {
                             debug.appendLine("  /$js -> ${content.length} chars")
-                            debug.appendLine("  Preview: ${content.take(500)}")
+                            debug.appendLine("  Preview: ${content.take(300)}")
                             allContent.appendLine(content)
                         }
                     } catch (_: Exception) {}
                 }
 
-                // ═══ الخطوة 2: حلل المحتوى ═══
-                debug.appendLine("\n=== ANALYZE CONTENT ===")
+                // ═══ حلل المحتوى ═══
+                debug.appendLine("\n=== ANALYZE ===")
                 val fullText = allContent.toString()
 
                 val goformIds = mutableSetOf<String>()
                 val macParams = mutableSetOf<String>()
 
-                // ابحث عن goformId
                 for (m in Regex("""['"](SET_[A-Z_]+)['"]""").findAll(fullText)) {
                     goformIds.add(m.groupValues[1])
                 }
@@ -214,7 +207,6 @@ class RouterRepository(private val storage: SecureStorage) {
                     goformIds.add(m.groupValues[1])
                 }
 
-                // ابحث عن معاملات MAC
                 for (m in Regex("""['"]([a-zA-Z_]*[Mm][Aa][Cc][a-zA-Z_]*)['"]""").findAll(fullText)) {
                     val p = m.groupValues[1]
                     if (p.length > 3 && p.length < 50) macParams.add(p)
@@ -231,11 +223,10 @@ class RouterRepository(private val storage: SecureStorage) {
                 debug.appendLine("goformIds: ${goformIds.joinToString(", ")}")
                 debug.appendLine("macParams: ${macParams.joinToString(", ")}")
 
-                // ═══ الخطوة 3: جرب الأوامر ═══
+                // ═══ جرب الأوامر ═══
                 debug.appendLine("\n=== TRY COMMANDS ===")
                 var success = false
 
-                // أضف افتراضيات
                 goformIds.addAll(listOf(
                     "SET_WIFI_MAC_FILTER",
                     "SET_WIFI_AP_MAC_FILTER",
@@ -252,14 +243,13 @@ class RouterRepository(private val storage: SecureStorage) {
                     if (success) break
                     for (param in macParams) {
                         if (success) break
-                        debug.appendLine("\n--- $id / $param ---")
 
-                        // شكل 1: form-urlencoded
+                        // شكل 1: form
                         try {
                             val body = "isTest=false&goformId=$id&$param=$newList"
                             val r = api.postRaw(body.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
                             val b = r.body()?.string() ?: ""
-                            debug.appendLine("  form: ${r.code()} ${b.take(150)}")
+                            debug.appendLine("  $id/$param form: ${r.code()} ${b.take(100)}")
                             if (isSuccess(b)) { debug.appendLine("  ✅ SUCCESS!"); success = true }
                         } catch (e: Exception) { debug.appendLine("  Error: ${e.message}") }
 
@@ -268,7 +258,7 @@ class RouterRepository(private val storage: SecureStorage) {
                             val body = "isTest=false&goformId=$id&mac_filter_enabled=1&mac_filter_mode=0&$param=$newList"
                             val r = api.postRaw(body.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
                             val b = r.body()?.string() ?: ""
-                            debug.appendLine("  with enable: ${r.code()} ${b.take(150)}")
+                            debug.appendLine("  $id/$param enabled: ${r.code()} ${b.take(100)}")
                             if (isSuccess(b)) { debug.appendLine("  ✅ SUCCESS!"); success = true }
                         } catch (e: Exception) { debug.appendLine("  Error: ${e.message}") }
 
@@ -277,13 +267,13 @@ class RouterRepository(private val storage: SecureStorage) {
                             val json = """{"isTest":"false","goformId":"$id","$param":"$newList"}"""
                             val r = api.postRaw(json.toRequestBody("application/json; charset=utf-8".toMediaType()))
                             val b = r.body()?.string() ?: ""
-                            debug.appendLine("  json: ${r.code()} ${b.take(150)}")
+                            debug.appendLine("  $id/$param json: ${r.code()} ${b.take(100)}")
                             if (isSuccess(b)) { debug.appendLine("  ✅ SUCCESS!"); success = true }
                         } catch (e: Exception) { debug.appendLine("  Error: ${e.message}") }
                     }
                 }
 
-                // ═══ الخطوة 4: تحقق ═══
+                // ═══ تحقق ═══
                 debug.appendLine("\n=== VERIFY ===")
                 var verified = false
                 try {
@@ -345,40 +335,19 @@ class RouterRepository(private val storage: SecureStorage) {
                 debug.appendLine("=== TEST ===")
                 debug.appendLine("Cookies: $cookies")
 
-                // اختبار الجلسة
                 try {
                     val r = api.getGenericCmd(cmd = "Language")
                     debug.appendLine("Language: ${r.body()?.string()}")
                 } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
 
-                // اسحب index.html مع cookies
-                debug.appendLine("\n--- index.html (via Retrofit) ---")
+                debug.appendLine("\n--- index.html ---")
                 try {
                     val r = api.getIndexPage()
                     val body = r.body()?.string() ?: ""
                     debug.appendLine("Length: ${body.length}")
                     debug.appendLine("First 500:\n${body.take(500)}")
-                    debug.appendLine("Last 500:\n${body.takeLast(500)}")
                 } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
 
-                // اسحب index.html مع raw cookies
-                debug.appendLine("\n--- index.html (raw with cookies) ---")
-                try {
-                    val request = Request.Builder()
-                        .url("http://$routerIp/index.html")
-                        .addHeader("Cookie", cookies)
-                        .build()
-                    val client = OkHttpClient.Builder()
-                        .connectTimeout(5, TimeUnit.SECONDS)
-                        .readTimeout(5, TimeUnit.SECONDS)
-                        .build()
-                    val response = client.newCall(request).execute()
-                    val body = response.body?.string() ?: ""
-                    debug.appendLine("Length: ${body.length}")
-                    debug.appendLine("First 500:\n${body.take(500)}")
-                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
-
-                // اسحب js/main.js
                 debug.appendLine("\n--- js/main.js ---")
                 try {
                     val request = Request.Builder()
@@ -392,10 +361,9 @@ class RouterRepository(private val storage: SecureStorage) {
                     val response = client.newCall(request).execute()
                     val body = response.body?.string() ?: ""
                     debug.appendLine("Length: ${body.length}")
-                    debug.appendLine("Full content:\n${body.take(2000)}")
+                    debug.appendLine("Content:\n${body.take(2000)}")
                 } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
 
-                // اسحب js/app.js
                 debug.appendLine("\n--- js/app.js ---")
                 try {
                     val request = Request.Builder()
@@ -409,15 +377,13 @@ class RouterRepository(private val storage: SecureStorage) {
                     val response = client.newCall(request).execute()
                     val body = response.body?.string() ?: ""
                     debug.appendLine("Length: ${body.length}")
-                    debug.appendLine("Full content:\n${body}")
+                    debug.appendLine("Content:\n${body}")
                 } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
 
                 Result.success(debug.toString())
             }
         } catch (e: Exception) { Result.failure(Exception("Test: ${e.message}")) }
     }
-
-    // ═══ باقي الدوال ═══
 
     private fun flushArpCache(debug: StringBuilder) {
         try {
