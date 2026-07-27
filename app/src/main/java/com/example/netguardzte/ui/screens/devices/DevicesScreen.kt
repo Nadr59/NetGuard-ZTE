@@ -3,6 +3,7 @@ package com.example.netguardzte.ui.screens.devices
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,21 +52,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.netguardzte.domain.model.Device
-import com.example.netguardzte.ui.components.DeviceCard
-import android.content.Intent
-import androidx.compose.ui.platform.LocalContext
 import com.example.netguardzte.ui.WebCaptureActivity
+import com.example.netguardzte.ui.components.DeviceCard
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-val context = LocalContext.current
-
-Button(onClick = {
-    val intent = Intent(context, WebCaptureActivity::class.java)
-    context.startActivity(intent)
-}) {
-    Text("Block Capture")
-}
 fun DevicesScreen(
     devices: List<Device>,
     isLoading: Boolean,
@@ -103,6 +94,13 @@ fun DevicesScreen(
             TopAppBar(
                 title = { Text("الأجهزة المتصلة", fontWeight = FontWeight.Bold) },
                 actions = {
+                    IconButton(onClick = {
+                        context.startActivity(
+                            Intent(context, WebCaptureActivity::class.java)
+                        )
+                    }) {
+                        Text("📡", fontSize = 18.sp)
+                    }
                     IconButton(onClick = onTestRouter) {
                         Text("🧪", fontSize = 18.sp)
                     }
@@ -335,14 +333,6 @@ private fun DebugCard(debugInfo: String, onCopy: () -> Unit, copyMessage: String
             }
 
             Spacer(Modifier.height(4.dp))
-            // في شاشة الأجهزة (DevicesScreen أو أي مكان)
-Button(onClick = {
-    context.startActivity(
-        Intent(context, WebCaptureActivity::class.java)
-    )
-}) {
-    Text("🔍 التقاط طلب الحظر")
-}
 
             SelectionContainer {
                 Text(
