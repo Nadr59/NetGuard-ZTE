@@ -26,6 +26,10 @@
     android:name=".ui.WebCaptureActivity"
     android:exported="false"
     android:usesCleartextTraffic="true" />
+        <activity
+    android:name=".ui.WebCaptureActivity"
+    android:exported="false"
+    android:usesCleartextTraffic="true" />
 
     </application>
 </manifest>
