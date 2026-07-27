@@ -19,15 +19,26 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Generate wrapper if missing
+        run: |
+          if [ ! -f ./gradlew ]; then
+            echo "gradlew not found, generating..."
+            gradle wrapper --gradle-version 8.5
+          fi
+          chmod +x ./gradlew
+          ls -la ./gradlew
+
       - name: Android SDK
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wget unzip
           mkdir -p android-sdk/cmdline-tools
           wget -q -O tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
           unzip -q tools.zip -d android-sdk/cmdline-tools/tmp
           mkdir -p android-sdk/cmdline-tools/latest
           mv android-sdk/cmdline-tools/tmp/cmdline-tools/* android-sdk/cmdline-tools/latest/
+          rm -rf tools.zip android-sdk/cmdline-tools/tmp
           yes | android-sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=$PWD/android-sdk "platform-tools" "platforms;android-34" "build-tools;34.0.0"
           yes | android-sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=$PWD/android-sdk --licenses
           echo "ANDROID_HOME=$PWD/android-sdk" >> $GITHUB_ENV
