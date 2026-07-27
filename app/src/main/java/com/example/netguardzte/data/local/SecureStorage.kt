@@ -5,8 +5,6 @@ import android.content.SharedPreferences
 
 class SecureStorage(context: Context) {
 
-    // بديل بسيط بدون EncryptedSharedPreferences
-    // يمكنك تفعيل التشفير لاحقاً بعد إضافة dependency
     private val prefs: SharedPreferences = context.getSharedPreferences(
         "netguard_prefs",
         Context.MODE_PRIVATE
@@ -38,6 +36,17 @@ class SecureStorage(context: Context) {
 
     fun setLoggedIn(loggedIn: Boolean) {
         prefs.edit().putBoolean("logged_in", loggedIn).apply()
+    }
+
+    // ═══ هذه هي الدالة المفقودة ═══
+    fun hasCredentials(): Boolean {
+        return try {
+            val ip = getRouterIp()
+            val pass = getPassword()
+            ip.isNotBlank() && pass.isNotBlank()
+        } catch (_: Exception) {
+            false
+        }
     }
 
     fun clear() {
