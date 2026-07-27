@@ -37,13 +37,13 @@ data class NetGuardUiState(
 
 class NetGuardViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val storage: SecureStorage
-    val repository: RouterRepository
+    // ═══ lateinit var بدلاً من val ═══
+    private lateinit var storage: SecureStorage
+    lateinit var repository: RouterRepository
 
     private val _uiState = MutableStateFlow(NetGuardUiState())
     val uiState: StateFlow<NetGuardUiState> = _uiState.asStateFlow()
 
-    // معالج الأخطاء العام للـ coroutines
     private val errorHandler = CoroutineExceptionHandler { _, throwable ->
         val sw = StringWriter()
         throwable.printStackTrace(PrintWriter(sw))
@@ -59,15 +59,12 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
     }
 
     init {
-        // تهيئة آمنة
         try {
             storage = SecureStorage(application)
             repository = RouterRepository(storage)
         } catch (e: Exception) {
-            // إذا فشل التهيئة، أنشئ نسخ افتراضية
-            val fallbackStorage = SecureStorage(application)
-            storage = fallbackStorage
-            repository = RouterRepository(fallbackStorage)
+            storage = SecureStorage(application)
+            repository = RouterRepository(storage)
             saveError("Init error: ${e.message}")
         }
 
@@ -76,9 +73,7 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
             val uname = storage.getUsername()
             val loggedIn = try {
                 storage.isLoggedIn() && storage.hasCredentials()
-            } catch (_: Exception) {
-                false
-            }
+            } catch (_: Exception) { false }
 
             val crash = getStoredCrash()
 
@@ -89,7 +84,6 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
                 crashInfo = crash
             )
 
-            // لا تحمّل الأجهزة تلقائياً إذا كان هناك خطأ سابق
             if (loggedIn && crash.isBlank()) {
                 try { loadDevices() } catch (_: Exception) {}
             }
@@ -330,8 +324,6 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
         } catch (_: Exception) {}
     }
 
-    // ═══ أدوات مساعدة ═══
-
     private fun saveError(text: String) {
         try {
             val prefs = getApplication<Application>()
@@ -342,10 +334,7 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun getStoredCrash(): String {
-        // اقرأ من الذاكرة أولاً (أسرع)
         if (App.lastCrashText.isNotBlank()) return App.lastCrashText
-
-        // اقرأ من SharedPreferences
         return try {
             val prefs = getApplication<Application>()
                 .getSharedPreferences("crash_log", android.content.Context.MODE_PRIVATE)
