@@ -53,10 +53,12 @@ class MainActivity : ComponentActivity() {
                             password = s.password,
                             isLoggingIn = s.isLoggingIn,
                             error = s.loginError,
+                            crashInfo = s.crashInfo,
                             onRouterIpChanged = { vm.onRouterIpChanged(it) },
                             onUsernameChanged = { vm.onUsernameChanged(it) },
                             onPasswordChanged = { vm.onPasswordChanged(it) },
-                            onLogin = { vm.login() }
+                            onLogin = { vm.login() },
+                            onClearCrash = { vm.clearCrashLog() }
                         )
 
                         "devices" -> DevicesScreen(
