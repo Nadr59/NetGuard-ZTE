@@ -13,6 +13,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -47,27 +49,24 @@ fun LoginScreen(
     password: String,
     isLoggingIn: Boolean,
     error: String?,
+    crashInfo: String = "",
     onRouterIpChanged: (String) -> Unit,
     onUsernameChanged: (String) -> Unit,
     onPasswordChanged: (String) -> Unit,
-    onLogin: () -> Unit
+    onLogin: () -> Unit,
+    onClearCrash: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var showCrash by remember { mutableStateOf(false) }
-
-    val crashPrefs = remember {
-        context.getSharedPreferences("crash_log", android.content.Context.MODE_PRIVATE)
-    }
-    val lastCrash = remember { crashPrefs.getString("last_crash", "") ?: "" }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("NetGuard ZTE", fontWeight = FontWeight.Bold) },
                 actions = {
-                    if (lastCrash.isNotBlank()) {
+                    if (crashInfo.isNotBlank()) {
                         TextButton(onClick = { showCrash = true }) {
-                            Text("💥 خطأ", color = MaterialTheme.colorScheme.error)
+                            Text("💥", fontSize = 20.sp)
                         }
                     }
                 },
@@ -146,6 +145,46 @@ fun LoginScreen(
                 Spacer(Modifier.height(8.dp))
             }
 
+            // عرض الخطأ الأخير إن وجد
+            if (crashInfo.isNotBlank()) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(8.dp)) {
+                        Text(
+                            "💥 آخر خطأ:",
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            fontSize = 12.sp
+                        )
+                        Text(
+                            text = crashInfo.take(500),
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            lineHeight = 13.sp
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        TextButton(onClick = {
+                            val clipboard = context.getSystemService(
+                                android.content.Context.CLIPBOARD_SERVICE
+                            ) as android.content.ClipboardManager
+                            clipboard.setPrimaryClip(
+                                android.content.ClipData.newPlainText("crash", crashInfo)
+                            )
+                        }) { Text("📋 نسخ", fontSize = 11.sp) }
+                        TextButton(onClick = onClearCrash) {
+                            Text("🗑 مسح", fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+
             Spacer(Modifier.height(16.dp))
 
             Button(
@@ -168,13 +207,13 @@ fun LoginScreen(
         }
     }
 
-    if (showCrash && lastCrash.isNotBlank()) {
+    if (showCrash && crashInfo.isNotBlank()) {
         AlertDialog(
             onDismissRequest = { showCrash = false },
-            title = { Text("آخر خطأ", fontWeight = FontWeight.Bold) },
+            title = { Text("تفاصيل الخطأ", fontWeight = FontWeight.Bold) },
             text = {
                 Text(
-                    text = lastCrash,
+                    text = crashInfo,
                     fontSize = 10.sp,
                     fontFamily = FontFamily.Monospace,
                     lineHeight = 14.sp
@@ -186,15 +225,15 @@ fun LoginScreen(
                         android.content.Context.CLIPBOARD_SERVICE
                     ) as android.content.ClipboardManager
                     clipboard.setPrimaryClip(
-                        android.content.ClipData.newPlainText("crash", lastCrash)
+                        android.content.ClipData.newPlainText("crash", crashInfo)
                     )
-                }) { Text("نسخ") }
+                }) { Text("نسخ الكل") }
             },
             dismissButton = {
                 TextButton(onClick = {
-                    crashPrefs.edit().remove("last_crash").apply()
+                    onClearCrash()
                     showCrash = false
-                }) { Text("مسح وإغلاق") }
+                }) { Text("مسح") }
             }
         )
     }
