@@ -22,12 +22,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <activity
-    android:name=".ui.WebCaptureActivity"
-    android:exported="false"
-    android:usesCleartextTraffic="true" />
-        <activity
-    
 
+        <activity
+            android:name=".ui.WebCaptureActivity"
+            android:exported="false"
+            android:usesCleartextTraffic="true" />
     </application>
 </manifest>
