@@ -52,6 +52,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.netguardzte.domain.model.Device
 import com.example.netguardzte.ui.components.DeviceCard
+import android.content.Intent
+import androidx.compose.ui.platform.LocalContext
+import com.example.netguardzte.ui.WebCaptureActivity
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
