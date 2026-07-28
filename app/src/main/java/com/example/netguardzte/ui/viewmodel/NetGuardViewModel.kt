@@ -43,7 +43,7 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
     private val _uiState = MutableStateFlow(NetGuardUiState())
     val uiState: StateFlow<NetGuardUiState> = _uiState.asStateFlow()
 
-    private val errorHandler = CoroutineExceptionHandler { _, throwable ->
+    private val errorHandler = CoroutineExceptionHandler { _: kotlin.coroutines.CoroutineContext, throwable: Throwable ->
         val sw = StringWriter()
         throwable.printStackTrace(PrintWriter(sw))
         val errorText = "Coroutine Error: ${throwable.message}\n$sw"
@@ -118,7 +118,7 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
             try {
                 val result = repository.login(s.routerIp, s.username, s.password)
                 result.fold(
-                    onSuccess = { msg ->
+                    onSuccess = { msg: String ->
                         _uiState.value = _uiState.value.copy(
                             isLoggingIn = false,
                             currentScreen = "devices",
@@ -126,7 +126,7 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
                         )
                         loadDevices()
                     },
-                    onFailure = { e ->
+                    onFailure = { e: Throwable ->
                         _uiState.value = _uiState.value.copy(
                             isLoggingIn = false,
                             loginError = e.message ?: "فشل تسجيل الدخول",
@@ -156,14 +156,14 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
                 val blockedResult = try {
                     repository.getBlockedMacs()
                 } catch (_: Exception) {
-                    Result.success(emptyList())
+                    Result.success(emptyList<String>())
                 }
 
                 val devices = devicesResult.getOrNull() ?: emptyList()
                 val blocked = blockedResult.getOrNull() ?: emptyList()
 
-                val withBlock = devices.map { d ->
-                    d.copy(isBlocked = blocked.any { b ->
+                val withBlock = devices.map { d: Device ->
+                    d.copy(isBlocked = blocked.any { b: String ->
                         b.uppercase() == d.mac.uppercase()
                     })
                 }
@@ -194,14 +194,14 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch(errorHandler) {
             try {
                 repository.testRouterConnection().fold(
-                    onSuccess = { result ->
+                    onSuccess = { result: String ->
                         _uiState.value = _uiState.value.copy(
                             isTestingRouter = false,
                             showDebugInfo = true,
                             debugInfo = result
                         )
                     },
-                    onFailure = { e ->
+                    onFailure = { e: Throwable ->
                         _uiState.value = _uiState.value.copy(
                             isTestingRouter = false,
                             showDebugInfo = true,
@@ -230,7 +230,7 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch(errorHandler) {
             try {
                 repository.blockDevice(device.mac, _uiState.value.blockedMacs).fold(
-                    onSuccess = { msg ->
+                    onSuccess = { msg: String ->
                         _uiState.value = _uiState.value.copy(
                             message = msg,
                             debugInfo = repository.lastRawResponse,
@@ -238,7 +238,7 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
                         )
                         loadDevices()
                     },
-                    onFailure = { e ->
+                    onFailure = { e: Throwable ->
                         _uiState.value = _uiState.value.copy(
                             message = "فشل الحظر",
                             debugInfo = repository.allCommandsDebug.ifBlank {
@@ -271,11 +271,11 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch(errorHandler) {
             try {
                 repository.unblockDevice(mac, _uiState.value.blockedMacs).fold(
-                    onSuccess = { msg ->
+                    onSuccess = { msg: String ->
                         _uiState.value = _uiState.value.copy(message = msg)
                         loadDevices()
                     },
-                    onFailure = { e ->
+                    onFailure = { e: Throwable ->
                         _uiState.value = _uiState.value.copy(message = "فشل: ${e.message}")
                     }
                 )
@@ -305,6 +305,7 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
                 repository.logout()
             } catch (_: Exception) {}
         }
+        storage.setLoggedIn(false)
         _uiState.value = NetGuardUiState(
             routerIp = storage.getRouterIp(),
             username = storage.getUsername()
