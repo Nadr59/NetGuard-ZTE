@@ -113,7 +113,7 @@ class RouterRepository(private val storage: SecureStorage) {
     // تسجيل الدخول
     // ═══════════════════════════════════════════════════════════════
 
-    suspend fun login(
+        suspend fun login(
         routerIp: String,
         username: String,
         password: String
@@ -124,192 +124,115 @@ class RouterRepository(private val storage: SecureStorage) {
                 debug.appendLine("=== LOGIN START ===")
                 debug.appendLine("Router: $routerIp")
 
-                // ═══ 1. مسح الجلسات القديمة ═══
-                debug.appendLine("\n--- Force logout ---")
-                try {
-                    RetrofitClient.reset()
-                    RetrofitClient.setRouterAddress(routerIp)
-                    val api = RetrofitClient.getApi()
-
-                    // أرسل LOGOUT بدون مصادقة
-                    val logoutR = api.logout()
-                    debug.appendLine("Logout: ${logoutR.body()?.string()}")
-                    readCookies(logoutR, debug)
-
-                    // انتظر ثانيتين
-                    Thread.sleep(2000)
-                } catch (e: Exception) {
-                    debug.appendLine("Logout error: ${e.message}")
-                }
-
-                // ═══ 2. اتصال نظيف ═══
+                // ═══ 1. اتصال نظيف ═══
                 RetrofitClient.reset()
                 RetrofitClient.setRouterAddress(routerIp)
                 val api = RetrofitClient.getApi()
 
-                // ═══ 3. احصل على الكوكيز ═══
+                // ═══ 2. احصل على الكوكيز من الصفحة ═══
                 debug.appendLine("\n--- Get cookies ---")
                 try {
                     val mainPage = api.getMainPage()
                     debug.appendLine("Main page: ${mainPage.code()}")
-                    readCookies(mainPage, debug)
+                    debug.appendLine("Cookies: ${RetrofitClient.getCookiesString()}")
                 } catch (e: Exception) {
                     debug.appendLine("Main page error: ${e.message}")
                 }
 
-                // ═══ 4. احسب AD ═══
+                // ═══ 3. احسب AD ═══
                 debug.appendLine("\n--- Compute AD ---")
                 val adValue = computeAd(api, debug)
 
-                // ═══ 5. احصل على LD ═══
-                debug.appendLine("\n--- Get LD ---")
-                val ld = fetchValue(api, "LD", debug)
-
-                // ═══ 6. جهز طرق التشفير — Base64 أولاً! ═══
-                debug.appendLine("\n--- Prepare encodings ---")
-                val encodings = mutableListOf<Pair<String, String>>()
-
-                val b64 = Base64.encodeToString(
+                // ═══ 4. شفر كلمة المرور بـ Base64 (الصحيح لهذا الراوتر) ═══
+                val encodedPass = Base64.encodeToString(
                     password.toByteArray(Charsets.UTF_8), Base64.NO_WRAP
                 )
-                encodings.add("Base64" to b64)
-                debug.appendLine("Base64: $b64")
+                debug.appendLine("Password (Base64): $encodedPass")
+                debug.appendLine("AD: $adValue")
 
-                encodings.add("Plain" to password)
+                // ═══ 5. أرسل LOGIN (بدون isForce!) ═══
+                debug.appendLine("\n--- Send LOGIN ---")
+                val response = api.login(password = encodedPass, ad = adValue)
+                val body = response.body()?.string() ?: ""
+                debug.appendLine("Response: $body")
+                debug.appendLine("Cookies after: ${RetrofitClient.getCookiesString()}")
 
-                if (ld.isNotBlank()) {
-                    val hash = sha256(sha256(password) + ld)
-                    encodings.add("SHA256+LD" to hash)
-                    debug.appendLine("SHA256+LD: $hash")
-                }
+                when {
+                    // ═══ result:0 = نجاح كامل ═══
+                    body.contains("\"result\":\"0\"") || body.contains("\"result\":0") -> {
+                        debug.appendLine("✅ LOGIN SUCCESS!")
+                        storage.saveCredentials(routerIp, username, password)
+                        storage.setLoggedIn(true)
+                        loginDebug = debug.toString()
+                        return@withContext Result.success("تم الاتصال بالراوتر")
+                    }
 
-                encodings.add("MD5" to md5(password))
-                encodings.add("SHA256" to sha256(password))
+                    // ═══ result:1 = المتصفح مسجل دخول ═══
+                    body.contains("\"result\":\"1\"") || body.contains("\"result\":1") -> {
+                        debug.appendLine("⚠️ Browser session active!")
 
-                // ═══ 7. جرب كل طريقة مع isForce ═══
-                for ((label, encodedPass) in encodings) {
-                    debug.appendLine("\n=== Try: $label ===")
+                        // حاول مسح الجلسة القديمة
+                        debug.appendLine("\n--- Kill old session ---")
+                        try {
+                            api.logout()
+                            debug.appendLine("Logout sent")
+                            Thread.sleep(3000)
 
-                    try {
-                        debug.appendLine("Sending: pass=${encodedPass.take(30)}... AD=$adValue isForce=1")
+                            // أعد المحاولة
+                            RetrofitClient.reset()
+                            RetrofitClient.setRouterAddress(routerIp)
+                            val freshApi = RetrofitClient.getApi()
+                            try { freshApi.getMainPage() } catch (_: Exception) {}
 
-                        val response = api.login(
-                            password = encodedPass,
-                            ad = adValue,
-                            isForce = "1"
-                        )
-                        val body = response.body()?.string() ?: ""
-                        debug.appendLine("Response: $body")
-                        readCookies(response, debug)
+                            val freshAd = computeAd(freshApi, debug)
+                            val retryResp = freshApi.login(password = encodedPass, ad = freshAd)
+                            val retryBody = retryResp.body()?.string() ?: ""
+                            debug.appendLine("Retry: $retryBody")
+                            debug.appendLine("Cookies: ${RetrofitClient.getCookiesString()}")
 
-                        when {
-                            // ═══ نجاح ═══
-                            body.contains("\"result\":\"0\"") || body.contains("\"result\":0") -> {
-                                debug.appendLine("✅ LOGIN SUCCESS with $label!")
-
-                                // تحقق
-                                debug.appendLine("\n--- Verify ---")
-                                val aclR = api.getGenericCmd(cmd = "queryDeviceAccessControlList")
-                                val aclBody = aclR.body()?.string() ?: ""
-                                debug.appendLine("ACL: ${aclBody.take(200)}")
-
-                                if (aclBody.contains("AclMode") || aclBody.length > 30) {
-                                    debug.appendLine("✅ VERIFIED!")
-                                }
-
+                            if (retryBody.contains("\"result\":\"0\"") || retryBody.contains("\"result\":0")) {
+                                debug.appendLine("✅ LOGIN SUCCESS after retry!")
                                 storage.saveCredentials(routerIp, username, password)
                                 storage.setLoggedIn(true)
                                 loginDebug = debug.toString()
                                 return@withContext Result.success("تم الاتصال بالراوتر")
                             }
 
-                            // ═══ result:1 = مسجل مسبقاً ═══
-                            body.contains("\"result\":\"1\"") || body.contains("\"result\":1") -> {
-                                debug.appendLine("⚠️ Duplicate session with $label")
-
-                                // جرب تحقق مباشرة (الجلسة قد تكون صالحة)
-                                val aclR = api.getGenericCmd(cmd = "queryDeviceAccessControlList")
-                                val aclBody = aclR.body()?.string() ?: ""
-                                debug.appendLine("ACL check: ${aclBody.take(200)}")
-
-                                if (aclBody.contains("AclMode") || aclBody.contains("BlackMacList")) {
-                                    debug.appendLine("✅ Session is valid despite result:1!")
-                                    storage.saveCredentials(routerIp, username, password)
-                                    storage.setLoggedIn(true)
-                                    loginDebug = debug.toString()
-                                    return@withContext Result.success("تم الاتصال بالراوتر")
-                                }
-
-                                debug.appendLine("Session not valid, trying next encoding...")
-                            }
-
-                            // ═══ result:3 = كلمة مرور خاطئة ═══
-                            body.contains("\"result\":\"3\"") || body.contains("\"result\":3") -> {
-                                debug.appendLine("❌ Wrong password with $label")
-                            }
-
-                            else -> {
-                                debug.appendLine("❓ Unknown: ${body.take(100)}")
-                            }
-                        }
-                    } catch (e: Exception) {
-                        debug.appendLine("$label error: ${e.message}")
-                    }
-                }
-
-                // ═══ 8. فشلت كل المحاولات — جرب بدون isForce ═══
-                debug.appendLine("\n=== Try without isForce ===")
-                for ((label, encodedPass) in encodings.take(2)) {
-                    try {
-                        debug.appendLine("\n--- $label (no force) ---")
-
-                        RetrofitClient.reset()
-                        RetrofitClient.setRouterAddress(routerIp)
-                        val freshApi = RetrofitClient.getApi()
-                        try { freshApi.getMainPage() } catch (_: Exception) {}
-
-                        val freshAd = computeAd(freshApi, debug)
-                        val response = freshApi.login(password = encodedPass, ad = freshAd)
-                        val body = response.body()?.string() ?: ""
-                        debug.appendLine("Response: $body")
-                        readCookies(response, debug)
-
-                        if (body.contains("\"result\":\"0\"") || body.contains("\"result\":0")) {
-                            debug.appendLine("✅ SUCCESS without force!")
-                            storage.saveCredentials(routerIp, username, password)
-                            storage.setLoggedIn(true)
+                            // إذا فشل → أبلغ المستخدم
+                            debug.appendLine("\n❌ Session busy - close browser first!")
                             loginDebug = debug.toString()
-                            return@withContext Result.success("تم الاتصال بالراوتر")
-                        }
+                            return@withContext Result.failure(
+                                Exception("المتصفح مسجل دخول - أغلق تبويب 192.168.0.1 في المتصفح ثم حاول مرة أخرى")
+                            )
 
-                        if (body.contains("\"result\":\"1\"") || body.contains("\"result\":1")) {
-                            // تحقق مرة أخرى
-                            val aclR = freshApi.getGenericCmd(cmd = "queryDeviceAccessControlList")
-                            val aclBody = aclR.body()?.string() ?: ""
-                            debug.appendLine("ACL: ${aclBody.take(200)}")
-                            if (aclBody.contains("AclMode") || aclBody.contains("BlackMacList")) {
-                                debug.appendLine("✅ ACL works despite result:1!")
-                                storage.saveCredentials(routerIp, username, password)
-                                storage.setLoggedIn(true)
-                                loginDebug = debug.toString()
-                                return@withContext Result.success("تم الاتصال بالراوتر")
-                            }
+                        } catch (e: Exception) {
+                            debug.appendLine("Kill session error: ${e.message}")
+                            loginDebug = debug.toString()
+                            return@withContext Result.failure(
+                                Exception("المتصفح مسجل دخول - أغلق تبويب الراوتر في المتصفح")
+                            )
                         }
-                    } catch (e: Exception) {
-                        debug.appendLine("Error: ${e.message}")
+                    }
+
+                    // ═══ result:3 = كلمة مرور خاطئة ═══
+                    body.contains("\"result\":\"3\"") || body.contains("\"result\":3") -> {
+                        debug.appendLine("❌ Wrong password")
+                        loginDebug = debug.toString()
+                        return@withContext Result.failure(Exception("كلمة المرور خاطئة"))
+                    }
+
+                    else -> {
+                        debug.appendLine("❓ Unknown: $body")
+                        loginDebug = debug.toString()
+                        return@withContext Result.failure(Exception("استجابة غير متوقعة: $body"))
                     }
                 }
-
-                debug.appendLine("\n=== ALL FAILED ===")
-                debug.appendLine("Hint: تأكد أنك غير مسجل في المتصفح")
-                loginDebug = debug.toString()
-                Result.failure(Exception("فشل الدخول - أغلق صفحة الراوتر في المتصفح أولاً"))
             }
         } catch (e: Exception) {
             Result.failure(Exception("خطأ: ${e.message}"))
         }
     }
-
+    
     // ═══════════════════════════════════════════
     // التأكد من تسجيل الدخول
     // ═══════════════════════════════════════════
