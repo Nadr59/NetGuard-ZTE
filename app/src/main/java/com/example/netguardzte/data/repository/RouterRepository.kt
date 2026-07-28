@@ -8,14 +8,12 @@ import com.example.netguardzte.domain.model.Device
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 import retrofit2.Response
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.URLEncoder
 import java.security.MessageDigest
-import java.util.concurrent.TimeUnit
 
 class RouterRepository(private val storage: SecureStorage) {
 
@@ -30,18 +28,6 @@ class RouterRepository(private val storage: SecureStorage) {
     var allCommandsDebug: String = ""
         private set
 
-    private val httpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
-            .followRedirects(false)
-            .build()
-    }
-
-    // ═══════════════════════════════════════════
-    // أدوات مساعدة
-    // ═══════════════════════════════════════════
-
     private fun encodeParam(value: String): String = URLEncoder.encode(value, "UTF-8")
 
     private fun isSuccess(body: String): Boolean {
@@ -51,20 +37,19 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     private fun sha256(input: String): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        return md.digest(input.toByteArray(Charsets.UTF_8))
+        return MessageDigest.getInstance("SHA-256")
+            .digest(input.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
     }
 
     private fun md5(input: String): String {
-        val md = MessageDigest.getInstance("MD5")
-        return md.digest(input.toByteArray(Charsets.UTF_8))
+        return MessageDigest.getInstance("MD5")
+            .digest(input.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
     }
 
     private fun extractJsonField(json: String, field: String): String {
         Regex(""""$field"\s*:\s*"([^"]*?)"""").find(json)?.let { return it.groupValues[1] }
-        Regex(""""$field"\s*:\s*([0-9a-fA-F]+)""").find(json)?.let { return it.groupValues[1] }
         Regex(""""$field"\s*:\s*"?([^",}]+)"?""").find(json)?.let { return it.groupValues[1].trim() }
         return ""
     }
@@ -77,62 +62,41 @@ class RouterRepository(private val storage: SecureStorage) {
                     RetrofitClient.setSessionCookie(parts[0].trim(), parts[1].trim())
                 }
             }
-            cookieDebug = "Cookies: ${RetrofitClient.getCookiesString()}"
+            val cookies = RetrofitClient.getCookiesString()
+            cookieDebug = "Cookies: $cookies"
             debug.appendLine(cookieDebug)
         } catch (_: Exception) {}
     }
 
-    // ═══════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════
     // جلب قيمة من الراوتر
-    // ═══════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════
 
-    private suspend fun fetchValue(
-        api: ZteRouterApi,
-        name: String,
-        debug: StringBuilder
-    ): String {
-        // الطريقة 1: cmd
+    private suspend fun fetchValue(api: ZteRouterApi, name: String, debug: StringBuilder): String {
         try {
             val r = api.getGenericCmd(cmd = name)
             val body = r.body()?.string() ?: ""
-            debug.appendLine("GET cmd=$name → ${body.take(120)}")
+            debug.appendLine("GET $name → ${body.take(120)}")
             val value = extractJsonField(body, name)
             if (value.isNotBlank()) return value
         } catch (e: Exception) {
-            debug.appendLine("GET cmd=$name error: ${e.message}")
+            debug.appendLine("GET $name error: ${e.message}")
         }
-
-        // الطريقة 2: nv
-        try {
-            val r = api.getNvParam(nv = name)
-            val body = r.body()?.string() ?: ""
-            debug.appendLine("GET nv=$name → ${body.take(120)}")
-            val value = extractJsonField(body, name)
-            if (value.isNotBlank()) return value
-        } catch (e: Exception) {
-            debug.appendLine("GET nv=$name error: ${e.message}")
-        }
-
-        debug.appendLine("⚠️ $name not found!")
         return ""
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // حساب AD — MD5(MD5(wa_inner_version + cr_version) + RD)
-    // ═══════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════
+    // حساب AD
+    // ═══════════════════════════════════════════════
 
-    private suspend fun computeAdParameter(api: ZteRouterApi, debug: StringBuilder): String {
+    private suspend fun computeAd(api: ZteRouterApi, debug: StringBuilder): String {
         try {
             val waInner = fetchValue(api, "wa_inner_version", debug)
             val crVersion = fetchValue(api, "cr_version", debug)
-            if (waInner.isBlank() || crVersion.isBlank()) {
-                debug.appendLine("⚠️ No versions for AD")
-                return ""
-            }
-
             val rd = fetchValue(api, "RD", debug)
-            if (rd.isBlank()) {
-                debug.appendLine("⚠️ No RD for AD")
+
+            if (waInner.isBlank() || crVersion.isBlank() || rd.isBlank()) {
+                debug.appendLine("⚠️ Missing data for AD")
                 return ""
             }
 
@@ -146,10 +110,10 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // تسجيل الدخول — مع AD + كل طرق التشفير
+    // تسجيل الدخول
     // ═══════════════════════════════════════════════════════════════
-         
-        suspend fun login(
+
+    suspend fun login(
         routerIp: String,
         username: String,
         password: String
@@ -160,12 +124,30 @@ class RouterRepository(private val storage: SecureStorage) {
                 debug.appendLine("=== LOGIN START ===")
                 debug.appendLine("Router: $routerIp")
 
-                // ═══ 1. اتصال نظيف ═══
+                // ═══ 1. مسح الجلسات القديمة ═══
+                debug.appendLine("\n--- Force logout ---")
+                try {
+                    RetrofitClient.reset()
+                    RetrofitClient.setRouterAddress(routerIp)
+                    val api = RetrofitClient.getApi()
+
+                    // أرسل LOGOUT بدون مصادقة
+                    val logoutR = api.logout()
+                    debug.appendLine("Logout: ${logoutR.body()?.string()}")
+                    readCookies(logoutR, debug)
+
+                    // انتظر ثانيتين
+                    Thread.sleep(2000)
+                } catch (e: Exception) {
+                    debug.appendLine("Logout error: ${e.message}")
+                }
+
+                // ═══ 2. اتصال نظيف ═══
                 RetrofitClient.reset()
                 RetrofitClient.setRouterAddress(routerIp)
                 val api = RetrofitClient.getApi()
 
-                // ═══ 2. احصل على الكوكيز ═══
+                // ═══ 3. احصل على الكوكيز ═══
                 debug.appendLine("\n--- Get cookies ---")
                 try {
                     val mainPage = api.getMainPage()
@@ -175,129 +157,183 @@ class RouterRepository(private val storage: SecureStorage) {
                     debug.appendLine("Main page error: ${e.message}")
                 }
 
-                // ═══ 3. احسب AD ═══
+                // ═══ 4. احسب AD ═══
                 debug.appendLine("\n--- Compute AD ---")
-                val adValue = computeAdParameter(api, debug)
-                debug.appendLine("AD=$adValue")
+                val adValue = computeAd(api, debug)
 
-                // ═══ 4. احصل على LD ═══
+                // ═══ 5. احصل على LD ═══
                 debug.appendLine("\n--- Get LD ---")
                 val ld = fetchValue(api, "LD", debug)
-                debug.appendLine("LD=$ld")
 
-                // ═══ 5. جهز طرق التشفير ═══
+                // ═══ 6. جهز طرق التشفير — Base64 أولاً! ═══
+                debug.appendLine("\n--- Prepare encodings ---")
                 val encodings = mutableListOf<Pair<String, String>>()
 
-                // Base64 أولاً (ثبت نجاحه!)
                 val b64 = Base64.encodeToString(
                     password.toByteArray(Charsets.UTF_8), Base64.NO_WRAP
                 )
                 encodings.add("Base64" to b64)
                 debug.appendLine("Base64: $b64")
 
-                // Plain text
                 encodings.add("Plain" to password)
 
-                // SHA256+LD
                 if (ld.isNotBlank()) {
                     val hash = sha256(sha256(password) + ld)
                     encodings.add("SHA256+LD" to hash)
                     debug.appendLine("SHA256+LD: $hash")
                 }
 
-                // MD5
                 encodings.add("MD5" to md5(password))
-
-                // SHA256 فقط
                 encodings.add("SHA256" to sha256(password))
 
-                debug.appendLine("Will try ${encodings.size} encodings")
-
-                // ═══ 6. جرب كل طريقة ═══
+                // ═══ 7. جرب كل طريقة مع isForce ═══
                 for ((label, encodedPass) in encodings) {
                     debug.appendLine("\n=== Try: $label ===")
-                    debug.appendLine("Sending: password=${encodedPass.take(30)}..., AD=$adValue")
 
                     try {
-                        val response = api.login(password = encodedPass, ad = adValue)
+                        debug.appendLine("Sending: pass=${encodedPass.take(30)}... AD=$adValue isForce=1")
+
+                        val response = api.login(
+                            password = encodedPass,
+                            ad = adValue,
+                            isForce = "1"
+                        )
                         val body = response.body()?.string() ?: ""
                         debug.appendLine("Response: $body")
                         readCookies(response, debug)
 
-                        // ═══ result:0 أو result:1 = نجاح ═══
-                        if (body.contains("\"result\":\"0\"") || body.contains("\"result\":0") ||
-                            body.contains("\"result\":\"1\"") || body.contains("\"result\":1")) {
+                        when {
+                            // ═══ نجاح ═══
+                            body.contains("\"result\":\"0\"") || body.contains("\"result\":0") -> {
+                                debug.appendLine("✅ LOGIN SUCCESS with $label!")
 
-                            debug.appendLine("✅ LOGIN SUCCESS with $label!")
-
-                            // تحقق إضافي
-                            debug.appendLine("\n--- Verify ---")
-                            try {
+                                // تحقق
+                                debug.appendLine("\n--- Verify ---")
                                 val aclR = api.getGenericCmd(cmd = "queryDeviceAccessControlList")
                                 val aclBody = aclR.body()?.string() ?: ""
                                 debug.appendLine("ACL: ${aclBody.take(200)}")
 
                                 if (aclBody.contains("AclMode") || aclBody.length > 30) {
-                                    debug.appendLine("✅ VERIFIED: ACL returned data!")
+                                    debug.appendLine("✅ VERIFIED!")
                                 }
-                            } catch (e: Exception) {
-                                debug.appendLine("Verify error: ${e.message}")
+
+                                storage.saveCredentials(routerIp, username, password)
+                                storage.setLoggedIn(true)
+                                loginDebug = debug.toString()
+                                return@withContext Result.success("تم الاتصال بالراوتر")
                             }
 
+                            // ═══ result:1 = مسجل مسبقاً ═══
+                            body.contains("\"result\":\"1\"") || body.contains("\"result\":1") -> {
+                                debug.appendLine("⚠️ Duplicate session with $label")
+
+                                // جرب تحقق مباشرة (الجلسة قد تكون صالحة)
+                                val aclR = api.getGenericCmd(cmd = "queryDeviceAccessControlList")
+                                val aclBody = aclR.body()?.string() ?: ""
+                                debug.appendLine("ACL check: ${aclBody.take(200)}")
+
+                                if (aclBody.contains("AclMode") || aclBody.contains("BlackMacList")) {
+                                    debug.appendLine("✅ Session is valid despite result:1!")
+                                    storage.saveCredentials(routerIp, username, password)
+                                    storage.setLoggedIn(true)
+                                    loginDebug = debug.toString()
+                                    return@withContext Result.success("تم الاتصال بالراوتر")
+                                }
+
+                                debug.appendLine("Session not valid, trying next encoding...")
+                            }
+
+                            // ═══ result:3 = كلمة مرور خاطئة ═══
+                            body.contains("\"result\":\"3\"") || body.contains("\"result\":3") -> {
+                                debug.appendLine("❌ Wrong password with $label")
+                            }
+
+                            else -> {
+                                debug.appendLine("❓ Unknown: ${body.take(100)}")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        debug.appendLine("$label error: ${e.message}")
+                    }
+                }
+
+                // ═══ 8. فشلت كل المحاولات — جرب بدون isForce ═══
+                debug.appendLine("\n=== Try without isForce ===")
+                for ((label, encodedPass) in encodings.take(2)) {
+                    try {
+                        debug.appendLine("\n--- $label (no force) ---")
+
+                        RetrofitClient.reset()
+                        RetrofitClient.setRouterAddress(routerIp)
+                        val freshApi = RetrofitClient.getApi()
+                        try { freshApi.getMainPage() } catch (_: Exception) {}
+
+                        val freshAd = computeAd(freshApi, debug)
+                        val response = freshApi.login(password = encodedPass, ad = freshAd)
+                        val body = response.body()?.string() ?: ""
+                        debug.appendLine("Response: $body")
+                        readCookies(response, debug)
+
+                        if (body.contains("\"result\":\"0\"") || body.contains("\"result\":0")) {
+                            debug.appendLine("✅ SUCCESS without force!")
                             storage.saveCredentials(routerIp, username, password)
                             storage.setLoggedIn(true)
                             loginDebug = debug.toString()
                             return@withContext Result.success("تم الاتصال بالراوتر")
                         }
 
-                        // result:3 = كلمة مرور خاطئة - جرب الطريقة التالية
-                        if (body.contains("\"result\":\"3\"") || body.contains("\"result\":3")) {
-                            debug.appendLine("❌ Wrong password with $label, trying next...")
-                            continue
+                        if (body.contains("\"result\":\"1\"") || body.contains("\"result\":1")) {
+                            // تحقق مرة أخرى
+                            val aclR = freshApi.getGenericCmd(cmd = "queryDeviceAccessControlList")
+                            val aclBody = aclR.body()?.string() ?: ""
+                            debug.appendLine("ACL: ${aclBody.take(200)}")
+                            if (aclBody.contains("AclMode") || aclBody.contains("BlackMacList")) {
+                                debug.appendLine("✅ ACL works despite result:1!")
+                                storage.saveCredentials(routerIp, username, password)
+                                storage.setLoggedIn(true)
+                                loginDebug = debug.toString()
+                                return@withContext Result.success("تم الاتصال بالراوتر")
+                            }
                         }
-
-                        // result:5 = حساب مقفل
-                        if (body.contains("\"result\":\"5\"") || body.contains("\"result\":5")) {
-                            debug.appendLine("❌ Account locked")
-                            loginDebug = debug.toString()
-                            return@withContext Result.failure(Exception("الحساب مقفل"))
-                        }
-
-                        debug.appendLine("❓ Unknown result: ${body.take(100)}")
-
                     } catch (e: Exception) {
-                        debug.appendLine("$label error: ${e.message}")
+                        debug.appendLine("Error: ${e.message}")
                     }
                 }
 
                 debug.appendLine("\n=== ALL FAILED ===")
+                debug.appendLine("Hint: تأكد أنك غير مسجل في المتصفح")
                 loginDebug = debug.toString()
-                Result.failure(Exception("فشل تسجيل الدخول بكل الطرق"))
+                Result.failure(Exception("فشل الدخول - أغلق صفحة الراوتر في المتصفح أولاً"))
             }
         } catch (e: Exception) {
             Result.failure(Exception("خطأ: ${e.message}"))
         }
     }
+
     // ═══════════════════════════════════════════
-    // ال
+    // التأكد من تسجيل الدخول
     // ═══════════════════════════════════════════
 
-    private suspend fun ensureLoggedIn(api: ZteRouterApi, debug: StringBuilder) {
+    private suspend fun ensureLoggedIn(api: ZteRouterApi, debug: StringBuilder): Boolean {
         try {
-            val loginfoR = api.getGenericCmd(cmd = "loginfo")
-            val loginfoBody = loginfoR.body()?.string() ?: ""
-            debug.appendLine("loginfo: ${loginfoBody.take(100)}")
+            // اختبر مباشرة بقراءة ACL
+            val aclR = api.getGenericCmd(cmd = "queryDeviceAccessControlList")
+            val aclBody = aclR.body()?.string() ?: ""
+            debug.appendLine("ACL check: ${aclBody.take(200)}")
 
-            if (loginfoBody.contains("\"loginfo\":\"ok\"") || loginfoBody.contains("\"loginfo\":1")) {
-                debug.appendLine("✅ Already logged in")
-                return
+            if (aclBody.contains("AclMode") || aclBody.contains("BlackMacList")) {
+                debug.appendLine("✅ Authenticated")
+                return true
             }
 
-            debug.appendLine("Not logged in, re-logging...")
+            // غير مسجل — أعد الدخول
+            debug.appendLine("Not authenticated, re-logging...")
             val result = login(storage.getRouterIp(), storage.getUsername(), storage.getPassword())
             debug.appendLine("Re-login: ${result.isSuccess}")
+            return result.isSuccess
         } catch (e: Exception) {
             debug.appendLine("ensureLoggedIn error: ${e.message}")
+            return false
         }
     }
 
@@ -314,8 +350,17 @@ class RouterRepository(private val storage: SecureStorage) {
 
                 debug.appendLine("=== DEVICE SCAN ===")
 
-                flushArpCache(debug)
-                forceArpEntries(subnet, debug)
+                try {
+                    Runtime.getRuntime().exec(arrayOf("sh", "-c", "ip neigh flush dev wlan0")).waitFor()
+                } catch (_: Exception) {}
+
+                for (i in 1..50) {
+                    try {
+                        val s = java.net.Socket()
+                        s.connect(java.net.InetSocketAddress("$subnet.$i", 80), 30)
+                        s.close()
+                    } catch (_: Exception) {}
+                }
 
                 var devices = readArpFromAllSources(debug)
                 debug.appendLine("Found: ${devices.size}")
@@ -325,8 +370,6 @@ class RouterRepository(private val storage: SecureStorage) {
                 }
 
                 if (devices.isNotEmpty()) {
-                    lastWorkingCommand = "ARP"
-                    lastRawResponse = "${devices.size} devices"
                     allCommandsDebug = debug.toString()
                     return@withContext Result.success(devices)
                 }
@@ -352,7 +395,12 @@ class RouterRepository(private val storage: SecureStorage) {
 
                 debug.appendLine("=== BLOCK $macUpper ===")
 
-                ensureLoggedIn(api, debug)
+                val authenticated = ensureLoggedIn(api, debug)
+                if (!authenticated) {
+                    lastRawResponse = debug.toString()
+                    allCommandsDebug = debug.toString()
+                    return@withContext Result.failure(Exception("غير مسجل دخول - أغلق المتصفح أولاً"))
+                }
 
                 val currentAcl = readCurrentACL(api, debug)
                 val currentBlackListRaw = currentAcl["BlackMacList"] ?: ""
@@ -364,7 +412,7 @@ class RouterRepository(private val storage: SecureStorage) {
                 if (macUpper !in existingMacs) existingMacs.add(macUpper)
                 val newBlackList = existingMacs.joinToString(";") + ";"
 
-                val adValue = computeAdParameter(api, debug)
+                val adValue = computeAd(api, debug)
 
                 val body = buildString {
                     append("isTest=false")
@@ -386,11 +434,6 @@ class RouterRepository(private val storage: SecureStorage) {
 
                     if (isSuccess(responseBody)) {
                         debug.appendLine("✅ BLOCK SUCCESS!")
-                        Thread.sleep(1500)
-                        val verify = readCurrentACL(api, debug)
-                        val verified = (verify["BlackMacList"] ?: "").uppercase().contains(macUpper)
-                        debug.appendLine("Verified: $verified")
-
                         lastRawResponse = debug.toString()
                         allCommandsDebug = debug.toString()
                         return@withContext Result.success("تم حظر $macUpper")
@@ -438,7 +481,7 @@ class RouterRepository(private val storage: SecureStorage) {
                 val newAclMode = if (existingMacs.isEmpty()) "0" else "2"
                 val newBlackList = if (existingMacs.isEmpty()) "" else existingMacs.joinToString(";") + ";"
 
-                val adValue = computeAdParameter(api, debug)
+                val adValue = computeAd(api, debug)
 
                 val body = buildString {
                     append("isTest=false")
@@ -491,23 +534,16 @@ class RouterRepository(private val storage: SecureStorage) {
         }
     }
 
-    // ═══════════════════════════════════════════
-    // قراءة ACL
-    // ═══════════════════════════════════════════
-
     private suspend fun readCurrentACL(api: ZteRouterApi, debug: StringBuilder): Map<String, String> {
         val result = mutableMapOf<String, String>()
         try {
             val r = api.getGenericCmd(cmd = "queryDeviceAccessControlList")
             val body = r.body()?.string() ?: ""
-            debug.appendLine("ACL raw: ${body.take(200)}")
-
-            for (key in listOf("AclMode", "BlackMacList", "WhiteMacList", "WhiteNameList", "BlackNameList")) {
+            debug.appendLine("ACL: ${body.take(200)}")
+            for (key in listOf("AclMode", "BlackMacList", "WhiteMacList")) {
                 Regex(""""$key"\s*:\s*"([^"]*?)"""").find(body)?.let { result[key] = it.groupValues[1] }
             }
-        } catch (e: Exception) {
-            debug.appendLine("ACL error: ${e.message}")
-        }
+        } catch (e: Exception) { debug.appendLine("ACL error: ${e.message}") }
         return result
     }
 
@@ -525,23 +561,24 @@ class RouterRepository(private val storage: SecureStorage) {
                 try {
                     val r = api.getGenericCmd(cmd = "Language")
                     debug.appendLine("Language: ${r.body()?.string()}")
-                } catch (e: Exception) {
-                    debug.appendLine("Error: ${e.message}")
-                }
+                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
 
-                ensureLoggedIn(api, debug)
-
-                debug.appendLine("\n=== LD TEST ===")
-                val ld = fetchValue(api, "LD", debug)
-                debug.appendLine("LD=$ld")
+                debug.appendLine("\n=== Cookies ===")
+                debug.appendLine("Current: ${RetrofitClient.getCookiesString()}")
 
                 debug.appendLine("\n=== AD TEST ===")
-                val ad = computeAdParameter(api, debug)
-                debug.appendLine("AD=$ad")
+                val ad = computeAd(api, debug)
 
                 debug.appendLine("\n=== ACL TEST ===")
                 val acl = readCurrentACL(api, debug)
                 debug.appendLine("ACL=$acl")
+
+                debug.appendLine("\n=== LD TEST ===")
+                val ld = fetchValue(api, "LD", debug)
+
+                debug.appendLine("\n=== AUTH TEST ===")
+                val loginfo = api.getGenericCmd(cmd = "loginfo")
+                debug.appendLine("loginfo: ${loginfo.body()?.string()}")
 
                 Result.success(debug.toString())
             }
@@ -565,24 +602,8 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     // ═══════════════════════════════════════════
-    // أدوات ARP
+    // ARP أدوات
     // ═══════════════════════════════════════════
-
-    private fun flushArpCache(debug: StringBuilder) {
-        try { Runtime.getRuntime().exec(arrayOf("sh", "-c", "ip neigh flush dev wlan0")).waitFor() } catch (_: Exception) {}
-    }
-
-    private fun forceArpEntries(subnet: String, debug: StringBuilder) {
-        try {
-            for (i in 1..50) {
-                try {
-                    val s = java.net.Socket()
-                    s.connect(java.net.InetSocketAddress("$subnet.$i", 80), 30)
-                    s.close()
-                } catch (_: Exception) {}
-            }
-        } catch (_: Exception) {}
-    }
 
     private suspend fun readArpFromAllSources(debug: StringBuilder): List<Device> {
         var d = readIpNeigh(debug); if (d.isNotEmpty()) return d
