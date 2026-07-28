@@ -30,11 +30,8 @@ object RetrofitClient {
     }
 
     fun setSessionCookie(cookie: String?) {
-        if (cookie != null) {
-            cookieStore["zsid"] = cookie
-        } else {
-            cookieStore.clear()
-        }
+        if (cookie != null) cookieStore["zsid"] = cookie
+        else cookieStore.clear()
         retrofit = null
         api = null
     }
@@ -56,20 +53,29 @@ object RetrofitClient {
                 .readTimeout(15, TimeUnit.SECONDS)
                 .writeTimeout(15, TimeUnit.SECONDS)
                 .addInterceptor(logging)
+                // ═══ اعتراض الطلب: أضف الكوكيز ═══
                 .addInterceptor { chain ->
                     val request = chain.request().newBuilder()
                     val cookieHeader = getCookiesString()
                     if (cookieHeader.isNotBlank()) {
                         request.addHeader("Cookie", cookieHeader)
                     }
-                    // ═══ Headers صحيحة تُحاكي المتصفح ═══
                     request.addHeader("Referer", currentBaseUrl)
                     request.addHeader("Accept", "application/json, text/javascript, */*; q=0.01")
                     request.addHeader("X-Requested-With", "XMLHttpRequest")
-                    request.addHeader("Accept-Language", "en-US,en;q=0.9,ar;q=0.8")
-                    request.addHeader("Connection", "keep-alive")
-                    request.addHeader("Cache-Control", "no-cache")
                     chain.proceed(request.build())
+                }
+                // ═══ اعتراض الشبكة: احفظ الكوكيز يدوياً ═══
+                .addNetworkInterceptor { chain ->
+                    val response = chain.proceed(chain.request())
+                    for (header in response.headers("Set-Cookie")) {
+                        val nameValue = header.split(";")[0]
+                        val parts = nameValue.split("=", limit = 2)
+                        if (parts.size == 2) {
+                            cookieStore[parts[0].trim()] = parts[1].trim()
+                        }
+                    }
+                    response
                 }
                 .cookieJar(object : CookieJar {
                     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
@@ -77,7 +83,6 @@ object RetrofitClient {
                             cookieStore[cookie.name] = cookie.value
                         }
                     }
-
                     override fun loadForRequest(url: HttpUrl): List<Cookie> {
                         return cookieStore.map { (name, value) ->
                             Cookie.Builder()
