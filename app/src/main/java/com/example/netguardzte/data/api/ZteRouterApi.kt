@@ -13,8 +13,7 @@ interface ZteRouterApi {
         @Field("isTest") isTest: String = "false",
         @Field("goformId") goformId: String = "LOGIN",
         @Field("password") password: String,
-        @Field("AD") ad: String = "",
-        @Field("isForce") isForce: String = ""
+        @Field("AD") ad: String = ""
     ): Response<ResponseBody>
 
     @GET("goform/goform_get_cmd_process")
@@ -26,11 +25,6 @@ interface ZteRouterApi {
     @GET("goform/goform_get_cmd_process")
     suspend fun getNvParam(
         @Query("nv") nv: String
-    ): Response<ResponseBody>
-
-    @GET("goform/goform_get_cmd_process")
-    suspend fun getSystemInfo(
-        @Query("cmd") cmd: String = "Language,cr_version,wa_inner_version"
     ): Response<ResponseBody>
 
     @GET(".")
