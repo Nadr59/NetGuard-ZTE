@@ -54,10 +54,13 @@ class MainActivity : ComponentActivity() {
                             isLoggingIn = s.isLoggingIn,
                             error = s.loginError,
                             crashInfo = s.crashInfo,
+                            debugInfo = s.debugInfo,          // ← جديد
+                            showDebugInfo = s.showDebugInfo,  // ← جديد
                             onRouterIpChanged = { vm.onRouterIpChanged(it) },
                             onUsernameChanged = { vm.onUsernameChanged(it) },
                             onPasswordChanged = { vm.onPasswordChanged(it) },
                             onLogin = { vm.login() },
+                            onTestRouter = { vm.testRouter() },  // ← جديد
                             onClearCrash = { vm.clearCrashLog() }
                         )
 
