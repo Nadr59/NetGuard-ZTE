@@ -232,7 +232,7 @@ class RouterRepository(private val storage: SecureStorage) {
                                 }
                                 continue
                             }
-                            body.contains("\"result\":\"5\"") || body.contains("\"result\":5) -> {
+                            body.contains("\"result\":\"5\"") || body.contains("\"result\":5") -> {
                                 // مستخدم مكرر
                                 loginDebug = debug.toString()
                                 return@withContext Result.failure(Exception("مستخدم مسجل مسبقاً"))
