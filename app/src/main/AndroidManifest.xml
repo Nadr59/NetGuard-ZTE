@@ -24,9 +24,6 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".ui.WebCaptureActivity"
-            android:exported="false"
-            android:usesCleartextTraffic="true" />
+      
     </application>
 </manifest>
