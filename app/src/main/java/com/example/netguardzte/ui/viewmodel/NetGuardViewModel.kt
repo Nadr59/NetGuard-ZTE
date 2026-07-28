@@ -53,7 +53,8 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
             isLoadingDevices = false,
             isTestingRouter = false,
             loginError = throwable.message ?: "خطأ غير معروف",
-            debugInfo = errorText
+            debugInfo = errorText,
+            showDebugInfo = true
         )
     }
 
@@ -122,7 +123,8 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
                         _uiState.value = _uiState.value.copy(
                             isLoggingIn = false,
                             currentScreen = "devices",
-                            debugInfo = repository.loginDebug
+                            debugInfo = repository.loginDebug,
+                            showDebugInfo = true
                         )
                         loadDevices()
                     },
@@ -130,7 +132,8 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
                         _uiState.value = _uiState.value.copy(
                             isLoggingIn = false,
                             loginError = e.message ?: "فشل تسجيل الدخول",
-                            debugInfo = repository.loginDebug
+                            debugInfo = repository.loginDebug,
+                            showDebugInfo = true
                         )
                     }
                 )
@@ -141,7 +144,8 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
                 _uiState.value = _uiState.value.copy(
                     isLoggingIn = false,
                     loginError = "خطأ: ${e.message}",
-                    debugInfo = "Login Error:\n${e.message}\n$sw"
+                    debugInfo = repository.loginDebug.ifBlank { "Error:\n${e.message}\n$sw" },
+                    showDebugInfo = true
                 )
             }
         }
@@ -182,7 +186,8 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
                 _uiState.value = _uiState.value.copy(
                     isLoadingDevices = false,
                     deviceError = "خطأ: ${e.message}",
-                    debugInfo = "Error:\n${e.message}\n$sw"
+                    debugInfo = "Error:\n${e.message}\n$sw",
+                    showDebugInfo = true
                 )
             }
         }
