@@ -342,7 +342,7 @@ class RouterRepository(private val storage: SecureStorage) {
                 storage.setLoggedIn(true)
                 Result.success("تم الاتصال بالراوتر")
             }
-            body.contains("\"result\":\"1\"") || body.contains("\"result\":1) -> {
+            body.contains("\"result\":\"1\"") || body.contains("\"result\":1") -> {
                 debug.appendLine("⚠️ Already logged in elsewhere")
                 // حاول المتابعة - قد يكون مسجل بالفعل
                 storage.saveCredentials(routerIp, username, password)
