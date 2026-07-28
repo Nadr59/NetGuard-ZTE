@@ -37,7 +37,6 @@ data class NetGuardUiState(
 
 class NetGuardViewModel(application: Application) : AndroidViewModel(application) {
 
-    // ═══ lateinit var بدلاً من val ═══
     private lateinit var storage: SecureStorage
     lateinit var repository: RouterRepository
 
@@ -119,7 +118,7 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
             try {
                 val result = repository.login(s.routerIp, s.username, s.password)
                 result.fold(
-                    onSuccess = {
+                    onSuccess = { msg ->
                         _uiState.value = _uiState.value.copy(
                             isLoggingIn = false,
                             currentScreen = "devices",
@@ -195,18 +194,18 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch(errorHandler) {
             try {
                 repository.testRouterConnection().fold(
-                    onSuccess = {
+                    onSuccess = { result ->
                         _uiState.value = _uiState.value.copy(
                             isTestingRouter = false,
                             showDebugInfo = true,
-                            debugInfo = it
+                            debugInfo = result
                         )
                     },
-                    onFailure = {
+                    onFailure = { e ->
                         _uiState.value = _uiState.value.copy(
                             isTestingRouter = false,
                             showDebugInfo = true,
-                            debugInfo = "Error: ${it.message}"
+                            debugInfo = "Error: ${e.message}"
                         )
                     }
                 )
@@ -231,20 +230,20 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch(errorHandler) {
             try {
                 repository.blockDevice(device.mac, _uiState.value.blockedMacs).fold(
-                    onSuccess = {
+                    onSuccess = { msg ->
                         _uiState.value = _uiState.value.copy(
-                            message = it,
+                            message = msg,
                             debugInfo = repository.lastRawResponse,
                             showDebugInfo = true
                         )
                         loadDevices()
                     },
-                    onFailure = {
+                    onFailure = { e ->
                         _uiState.value = _uiState.value.copy(
                             message = "فشل الحظر",
                             debugInfo = repository.allCommandsDebug.ifBlank {
                                 repository.lastRawResponse.ifBlank {
-                                    it.message ?: "unknown"
+                                    e.message ?: "unknown"
                                 }
                             },
                             showDebugInfo = true
@@ -272,12 +271,12 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch(errorHandler) {
             try {
                 repository.unblockDevice(mac, _uiState.value.blockedMacs).fold(
-                    onSuccess = {
-                        _uiState.value = _uiState.value.copy(message = it)
+                    onSuccess = { msg ->
+                        _uiState.value = _uiState.value.copy(message = msg)
                         loadDevices()
                     },
-                    onFailure = {
-                        _uiState.value = _uiState.value.copy(message = "فشل: ${it.message}")
+                    onFailure = { e ->
+                        _uiState.value = _uiState.value.copy(message = "فشل: ${e.message}")
                     }
                 )
             } catch (e: Exception) {
@@ -302,7 +301,9 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
 
     fun logout() {
         viewModelScope.launch(errorHandler) {
-            try { repository.logout() } catch (_: Exception) {}
+            try {
+                repository.logout()
+            } catch (_: Exception) {}
         }
         _uiState.value = NetGuardUiState(
             routerIp = storage.getRouterIp(),
