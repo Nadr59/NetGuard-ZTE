@@ -148,7 +148,8 @@ class RouterRepository(private val storage: SecureStorage) {
     // ═══════════════════════════════════════════════════════════════
     // تسجيل الدخول — مع AD + كل طرق التشفير
     // ═══════════════════════════════════════════════════════════════
-         suspend fun login(
+         
+        suspend fun login(
         routerIp: String,
         username: String,
         password: String
@@ -164,8 +165,8 @@ class RouterRepository(private val storage: SecureStorage) {
                 RetrofitClient.setRouterAddress(routerIp)
                 val api = RetrofitClient.getApi()
 
-                // ═══ 2. احصل على الكوكيز من الصفحة الرئيسية ═══
-                debug.appendLine("\n--- Get initial cookies ---")
+                // ═══ 2. احصل على الكوكيز ═══
+                debug.appendLine("\n--- Get cookies ---")
                 try {
                     val mainPage = api.getMainPage()
                     debug.appendLine("Main page: ${mainPage.code()}")
@@ -184,97 +185,94 @@ class RouterRepository(private val storage: SecureStorage) {
                 val ld = fetchValue(api, "LD", debug)
                 debug.appendLine("LD=$ld")
 
-                // ═══ 5. شفر كلمة المرور ═══
-                val encodedPass = if (ld.isNotBlank()) {
-                    sha256(sha256(password) + ld)
-                } else {
-                    Base64.encodeToString(password.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                // ═══ 5. جهز طرق التشفير ═══
+                val encodings = mutableListOf<Pair<String, String>>()
+
+                // Base64 أولاً (ثبت نجاحه!)
+                val b64 = Base64.encodeToString(
+                    password.toByteArray(Charsets.UTF_8), Base64.NO_WRAP
+                )
+                encodings.add("Base64" to b64)
+                debug.appendLine("Base64: $b64")
+
+                // Plain text
+                encodings.add("Plain" to password)
+
+                // SHA256+LD
+                if (ld.isNotBlank()) {
+                    val hash = sha256(sha256(password) + ld)
+                    encodings.add("SHA256+LD" to hash)
+                    debug.appendLine("SHA256+LD: $hash")
                 }
-                debug.appendLine("Method: ${if (ld.isNotBlank()) "SHA256+LD" else "Base64"}")
-                debug.appendLine("Encoded: ${encodedPass.take(40)}...")
 
-                // ═══ 6. أرسل LOGIN (لا تمسح الكوكيز!) ═══
-                debug.appendLine("\n--- Send LOGIN ---")
-                val response = api.login(password = encodedPass, ad = adValue)
-                val body = response.body()?.string() ?: ""
-                debug.appendLine("Response: $body")
-                readCookies(response, debug)
-                debug.appendLine("Cookies after login: ${RetrofitClient.getCookiesString()}")
+                // MD5
+                encodings.add("MD5" to md5(password))
 
-                // ═══ 7. تحقق من النتيجة ═══
-                when {
-                    // ═══ result:0 أو result:1 = نجاح! ═══
-                    body.contains("\"result\":\"0\"") || body.contains("\"result\":0") ||
-                    body.contains("\"result\":\"1\"") || body.contains("\"result\":1") -> {
+                // SHA256 فقط
+                encodings.add("SHA256" to sha256(password))
 
-                        debug.appendLine("✅ Login accepted (${if (body.contains("\"1\"")) "duplicate/session" else "new"})")
+                debug.appendLine("Will try ${encodings.size} encodings")
 
-                        // ═══ تحقق: هل فعلاً مسجل دخول؟ ═══
-                        debug.appendLine("\n--- Verify login ---")
-                        try {
-                            val loginfoR = api.getGenericCmd(cmd = "loginfo")
-                            val loginfoBody = loginfoR.body()?.string() ?: ""
-                            debug.appendLine("loginfo: $loginfoBody")
+                // ═══ 6. جرب كل طريقة ═══
+                for ((label, encodedPass) in encodings) {
+                    debug.appendLine("\n=== Try: $label ===")
+                    debug.appendLine("Sending: password=${encodedPass.take(30)}..., AD=$adValue")
 
-                            val aclR = api.getGenericCmd(cmd = "queryDeviceAccessControlList")
-                            val aclBody = aclR.body()?.string() ?: ""
-                            debug.appendLine("ACL test: ${aclBody.take(200)}")
+                    try {
+                        val response = api.login(password = encodedPass, ad = adValue)
+                        val body = response.body()?.string() ?: ""
+                        debug.appendLine("Response: $body")
+                        readCookies(response, debug)
 
-                            // إذا ACL يرجع بيانات = نجاح
-                            if (aclBody.contains("AclMode") || aclBody.contains("BlackMacList") ||
-                                aclBody.length > 30) {
-                                debug.appendLine("✅ VERIFIED: ACL returned data!")
-                                storage.saveCredentials(routerIp, username, password)
-                                storage.setLoggedIn(true)
-                                loginDebug = debug.toString()
-                                return@withContext Result.success("تم الاتصال بالراوتر")
+                        // ═══ result:0 أو result:1 = نجاح ═══
+                        if (body.contains("\"result\":\"0\"") || body.contains("\"result\":0") ||
+                            body.contains("\"result\":\"1\"") || body.contains("\"result\":1")) {
+
+                            debug.appendLine("✅ LOGIN SUCCESS with $label!")
+
+                            // تحقق إضافي
+                            debug.appendLine("\n--- Verify ---")
+                            try {
+                                val aclR = api.getGenericCmd(cmd = "queryDeviceAccessControlList")
+                                val aclBody = aclR.body()?.string() ?: ""
+                                debug.appendLine("ACL: ${aclBody.take(200)}")
+
+                                if (aclBody.contains("AclMode") || aclBody.length > 30) {
+                                    debug.appendLine("✅ VERIFIED: ACL returned data!")
+                                }
+                            } catch (e: Exception) {
+                                debug.appendLine("Verify error: ${e.message}")
                             }
 
-                            // إذا loginfo يقول ok
-                            if (loginfoBody.contains("\"loginfo\":\"ok\"") ||
-                                loginfoBody.contains("\"loginfo\":1")) {
-                                debug.appendLine("✅ VERIFIED: loginfo ok!")
-                                storage.saveCredentials(routerIp, username, password)
-                                storage.setLoggedIn(true)
-                                loginDebug = debug.toString()
-                                return@withContext Result.success("تم الاتصال بالراوتر")
-                            }
-
-                            //=result:1 لكن لم يتحقق = نجاح على أي حال
-                            debug.appendLine("⚠️ Accepted but unverified, saving anyway")
-                            storage.saveCredentials(routerIp, username, password)
-                            storage.setLoggedIn(true)
-                            loginDebug = debug.toString()
-                            return@withContext Result.success("تم الاتصال بالراوتر")
-
-                        } catch (e: Exception) {
-                            debug.appendLine("Verify error: ${e.message}")
-                            // قبل الدخول حتى لو فشل التحقق
                             storage.saveCredentials(routerIp, username, password)
                             storage.setLoggedIn(true)
                             loginDebug = debug.toString()
                             return@withContext Result.success("تم الاتصال بالراوتر")
                         }
-                    }
 
-                    body.contains("\"result\":\"3\"") || body.contains("\"result\":3") -> {
-                        debug.appendLine("❌ Wrong password")
-                        loginDebug = debug.toString()
-                        return@withContext Result.failure(Exception("كلمة المرور خاطئة"))
-                    }
+                        // result:3 = كلمة مرور خاطئة - جرب الطريقة التالية
+                        if (body.contains("\"result\":\"3\"") || body.contains("\"result\":3")) {
+                            debug.appendLine("❌ Wrong password with $label, trying next...")
+                            continue
+                        }
 
-                    body.contains("\"result\":\"5\"") || body.contains("\"result\":5") -> {
-                        debug.appendLine("❌ Account locked")
-                        loginDebug = debug.toString()
-                        return@withContext Result.failure(Exception("الحساب مقفل"))
-                    }
+                        // result:5 = حساب مقفل
+                        if (body.contains("\"result\":\"5\"") || body.contains("\"result\":5")) {
+                            debug.appendLine("❌ Account locked")
+                            loginDebug = debug.toString()
+                            return@withContext Result.failure(Exception("الحساب مقفل"))
+                        }
 
-                    else -> {
-                        debug.appendLine("❓ Unknown: $body")
-                        loginDebug = debug.toString()
-                        return@withContext Result.failure(Exception("استجابة غير متوقعة: $body"))
+                        debug.appendLine("❓ Unknown result: ${body.take(100)}")
+
+                    } catch (e: Exception) {
+                        debug.appendLine("$label error: ${e.message}")
                     }
                 }
+
+                debug.appendLine("\n=== ALL FAILED ===")
+                loginDebug = debug.toString()
+                Result.failure(Exception("فشل تسجيل الدخول بكل الطرق"))
             }
         } catch (e: Exception) {
             Result.failure(Exception("خطأ: ${e.message}"))
