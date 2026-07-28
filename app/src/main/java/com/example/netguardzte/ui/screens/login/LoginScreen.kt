@@ -13,10 +13,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -49,10 +51,13 @@ fun LoginScreen(
     isLoggingIn: Boolean,
     error: String?,
     crashInfo: String = "",
+    debugInfo: String = "",
+    showDebugInfo: Boolean = false,
     onRouterIpChanged: (String) -> Unit,
     onUsernameChanged: (String) -> Unit,
     onPasswordChanged: (String) -> Unit,
     onLogin: () -> Unit,
+    onTestRouter: () -> Unit = {},
     onClearCrash: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -144,30 +149,96 @@ fun LoginScreen(
                 Spacer(Modifier.height(8.dp))
             }
 
-            if (crashInfo.isNotBlank()) {
+            Spacer(Modifier.height(16.dp))
+
+            Button(
+                onClick = onLogin,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                enabled = !isLoggingIn
+            ) {
+                if (isLoggingIn) {
+                    Text("⏳ جاري الاتصال...", fontWeight = FontWeight.Bold)
+                } else {
+                    Text("تسجيل الدخول", fontWeight = FontWeight.Bold)
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // ═══ زر اختبار الراوتر من شاشة الدخول ═══
+            OutlinedButton(
+                onClick = onTestRouter,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.primary
+                )
+            ) {
+                Text("🧪 اختبار الاتصال بالراوتر")
+            }
+
+            // ═══ عرض Debug Info إذا موجود ═══
+            if (showDebugInfo && debugInfo.isNotBlank()) {
+                Spacer(Modifier.height(16.dp))
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            "🔍 Debug Info",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        TextButton(onClick = {
+                            val clipboard = context.getSystemService(
+                                android.content.Context.CLIPBOARD_SERVICE
+                            ) as android.content.ClipboardManager
+                            clipboard.setPrimaryClip(
+                                android.content.ClipData.newPlainText("debug", debugInfo)
+                            )
+                        }) { Text("📋 نسخ الكل", fontSize = 12.sp) }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = debugInfo,
+                            fontSize = 9.sp,
+                            fontFamily = FontFamily.Monospace,
+                            lineHeight = 12.sp,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(300.dp)
+                                .verticalScroll(rememberScrollState())
+                        )
+                    }
+                }
+            }
+
+            // ═══ عرض Crash Info إذا موجود ═══
+            if (crashInfo.isNotBlank()) {
+                Spacer(Modifier.height(16.dp))
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.errorContainer
                     )
                 ) {
                     Column(modifier = Modifier.padding(8.dp)) {
                         Text(
-                            "💥 آخر خطأ:",
+                            "💥 آخر انهيار:",
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onErrorContainer,
                             fontSize = 12.sp
                         )
                         Text(
                             text = crashInfo.take(500),
-                            fontSize = 10.sp,
+                            fontSize = 9.sp,
                             fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            lineHeight = 13.sp
+                            color = MaterialTheme.colorScheme.onErrorContainer
                         )
-                        Spacer(Modifier.height(4.dp))
                         TextButton(onClick = {
                             val clipboard = context.getSystemService(
                                 android.content.Context.CLIPBOARD_SERVICE
@@ -180,29 +251,6 @@ fun LoginScreen(
                             Text("🗑 مسح", fontSize = 11.sp)
                         }
                     }
-                }
-            }
-
-            Spacer(Modifier.height(16.dp))
-
-            // ═══ زر بدون CircularProgressIndicator ═══
-            Button(
-                onClick = onLogin,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp),
-                enabled = !isLoggingIn
-            ) {
-                if (isLoggingIn) {
-                    Text(
-                        "⏳ جاري الاتصال...",
-                        fontWeight = FontWeight.Bold
-                    )
-                } else {
-                    Text(
-                        "تسجيل الدخول",
-                        fontWeight = FontWeight.Bold
-                    )
                 }
             }
         }
