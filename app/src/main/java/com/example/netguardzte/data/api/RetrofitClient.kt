@@ -15,7 +15,6 @@ object RetrofitClient {
     private var retrofit: Retrofit? = null
     private var api: ZteRouterApi? = null
 
-    // ═══ تخزين الكوكيز يدوياً ═══
     private val cookieStore = mutableMapOf<String, String>()
 
     fun setRouterAddress(ip: String) {
@@ -53,18 +52,23 @@ object RetrofitClient {
             }
 
             val client = OkHttpClient.Builder()
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(10, TimeUnit.SECONDS)
-                .writeTimeout(10, TimeUnit.SECONDS)
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(15, TimeUnit.SECONDS)
+                .writeTimeout(15, TimeUnit.SECONDS)
                 .addInterceptor(logging)
                 .addInterceptor { chain ->
                     val request = chain.request().newBuilder()
-                    // ═══ أضف كل الكوكيز المحفوظة ═══
                     val cookieHeader = getCookiesString()
                     if (cookieHeader.isNotBlank()) {
                         request.addHeader("Cookie", cookieHeader)
                     }
+                    // ═══ Headers صحيحة تُحاكي المتصفح ═══
                     request.addHeader("Referer", currentBaseUrl)
+                    request.addHeader("Accept", "application/json, text/javascript, */*; q=0.01")
+                    request.addHeader("X-Requested-With", "XMLHttpRequest")
+                    request.addHeader("Accept-Language", "en-US,en;q=0.9,ar;q=0.8")
+                    request.addHeader("Connection", "keep-alive")
+                    request.addHeader("Cache-Control", "no-cache")
                     chain.proceed(request.build())
                 }
                 .cookieJar(object : CookieJar {
