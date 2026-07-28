@@ -45,7 +45,7 @@ object RetrofitClient {
     fun getApi(): ZteRouterApi {
         if (api == null) {
             val logging = HttpLoggingInterceptor().apply {
-                level = HttpLoggingInterceptor.Level.HEADERS
+                level = HttpLoggingInterceptor.Level.BODY
             }
 
             val client = OkHttpClient.Builder()
@@ -53,21 +53,9 @@ object RetrofitClient {
                 .readTimeout(15, TimeUnit.SECONDS)
                 .writeTimeout(15, TimeUnit.SECONDS)
                 .addInterceptor(logging)
-                // ═══ اعتراض الطلب: أضف الكوكيز ═══
-                .addInterceptor { chain ->
-                    val request = chain.request().newBuilder()
-                    val cookieHeader = getCookiesString()
-                    if (cookieHeader.isNotBlank()) {
-                        request.addHeader("Cookie", cookieHeader)
-                    }
-                    request.addHeader("Referer", currentBaseUrl)
-                    request.addHeader("Accept", "application/json, text/javascript, */*; q=0.01")
-                    request.addHeader("X-Requested-With", "XMLHttpRequest")
-                    chain.proceed(request.build())
-                }
-                // ═══ اعتراض الشبكة: احفظ الكوكيز يدوياً ═══
                 .addNetworkInterceptor { chain ->
                     val response = chain.proceed(chain.request())
+                    // احفظ كل الكوكيز من الاستجابة
                     for (header in response.headers("Set-Cookie")) {
                         val nameValue = header.split(";")[0]
                         val parts = nameValue.split("=", limit = 2)
@@ -76,6 +64,20 @@ object RetrofitClient {
                         }
                     }
                     response
+                }
+                .addInterceptor { chain ->
+                    val request = chain.request().newBuilder()
+                    val cookieHeader = getCookiesString()
+                    if (cookieHeader.isNotBlank()) {
+                        request.addHeader("Cookie", cookieHeader)
+                    }
+                    // ═══ Headers تُحاكي المتصفح ═══
+                    request.addHeader("Referer", currentBaseUrl)
+                    request.addHeader("Accept", "application/json, text/javascript, */*; q=0.01")
+                    request.addHeader("X-Requested-With", "XMLHttpRequest")
+                    request.addHeader("Accept-Language", "en-US,en;q=0.9")
+                    request.addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    chain.proceed(request.build())
                 }
                 .cookieJar(object : CookieJar {
                     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
