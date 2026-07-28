@@ -13,7 +13,8 @@ interface ZteRouterApi {
         @Field("isTest") isTest: String = "false",
         @Field("goformId") goformId: String = "LOGIN",
         @Field("password") password: String,
-        @Field("AD") ad: String = ""
+        @Field("AD") ad: String = "",
+        @Field("isForce") isForce: String = ""
     ): Response<ResponseBody>
 
     @GET("goform/goform_get_cmd_process")
