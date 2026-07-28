@@ -52,7 +52,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.netguardzte.domain.model.Device
-import com.example.netguardzte.ui.WebCaptureActivity
+
 import com.example.netguardzte.ui.components.DeviceCard
 import androidx.compose.animation.core.*
 import androidx.compose.runtime.LaunchedEffect
@@ -98,13 +98,7 @@ fun DevicesScreen(
             TopAppBar(
                 title = { Text("الأجهزة المتصلة", fontWeight = FontWeight.Bold) },
                 actions = {
-                    IconButton(onClick = {
-                        context.startActivity(
-                            Intent(context, WebCaptureActivity::class.java)
-                        )
-                    }) {
-                        Text("📡", fontSize = 18.sp)
-                    }
+                    
                     IconButton(onClick = onTestRouter) {
                         Text("🧪", fontSize = 18.sp)
                     }
