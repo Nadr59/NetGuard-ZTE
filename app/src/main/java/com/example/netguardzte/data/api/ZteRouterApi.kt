@@ -13,8 +13,7 @@ interface ZteRouterApi {
         @Field("isTest") isTest: String = "false",
         @Field("goformId") goformId: String = "LOGIN",
         @Field("password") password: String,
-        @Field("AD") ad: String = "",
-        @Field("isForce") isForce: String = ""
+        @Field("AD") ad: String = ""
     ): Response<ResponseBody>
 
     @GET("goform/goform_get_cmd_process")
@@ -23,16 +22,17 @@ interface ZteRouterApi {
         @Query("multimode") multimode: String = "0"
     ): Response<ResponseBody>
 
-    @GET("goform/goform_get_cmd_process")
-    suspend fun getNvParam(
-        @Query("nv") nv: String
-    ): Response<ResponseBody>
-
+    // ═══ الصفحة الرئيسية (صفحة التحويل) ═══
     @GET(".")
     suspend fun getMainPage(): Response<ResponseBody>
 
-    @GET("index.html")
-    suspend fun getIndexPage(): Response<ResponseBody>
+    // ═══ صفحة الدخول الحقيقية ═══
+    @GET("m/index.html")
+    suspend fun getLoginPage(): Response<ResponseBody>
+
+    // ═══ config.js (في مجلد m) ═══
+    @GET("m/config.js")
+    suspend fun getConfigJs(): Response<ResponseBody>
 
     @POST("goform/goform_set_cmd_process")
     suspend fun postRaw(
