@@ -264,197 +264,128 @@ class RouterRepository(private val storage: SecureStorage) {
     // DIAGNOSTIC — يختبر 5 طرق بـ clients منفصلة
     // ═══════════════════════════════════════════
 
-    suspend fun testRouterConnection(): Result<String> {
+          suspend fun testRouterConnection(): Result<String> {
         return try {
             withContext(Dispatchers.IO) {
                 val debug = StringBuilder()
                 val base = "http://${storage.getRouterIp()}"
                 val password = storage.getPassword()
 
-                debug.appendLine("=== DIAGNOSTIC v2 ===")
-                debug.appendLine("Pass: '${password.take(3)}...' (${password.length} chars)")
+                debug.appendLine("=== FIND CONFIG ===")
 
-                fun freshClient(): OkHttpClient {
-                    val store = mutableMapOf<String, String>()
-                    return OkHttpClient.Builder()
-                        .connectTimeout(15, TimeUnit.SECONDS)
-                        .readTimeout(15, TimeUnit.SECONDS)
-                        .cookieJar(object : CookieJar {
-                            override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-                                for (c in cookies) store[c.name] = c.value
-                            }
-                            override fun loadForRequest(url: HttpUrl): List<Cookie> {
-                                return store.map { (n, v) ->
-                                    Cookie.Builder()
-                                        .domain(url.host)
-                                        .path("/")
-                                        .name(n)
-                                        .value(v)
-                                        .build()
+                // ═══ 1. FULL HTML ═══
+                debug.appendLine("\n--- FULL HTML ---")
+                val html = httpGet("$base/m/index.html")
+                debug.appendLine(html)
+
+                // ═══ 2. Find data-main ═══
+                val dataMain = Regex("""data-main="([^"]*?)"""").find(html)
+                debug.appendLine("\ndata-main: ${dataMain?.groupValues?.getOrNull(1)}")
+
+                // ═══ 3. Find ALL script src ═══
+                val scriptSrcs = Regex("""src=["']([^"']*\.js[^"']*)["']""").findAll(html)
+                for (m in scriptSrcs) {
+                    debug.appendLine("Script: ${m.groupValues[1]}")
+                }
+
+                // ═══ 4. Load main.js ═══
+                debug.appendLine("\n--- MAIN.JS ---")
+                val mainPath = dataMain?.groupValues?.getOrNull(1) ?: "app/main"
+                for (prefix in listOf("m/", "m/js/", "")) {
+                    val url = "$base/$prefix$mainPath.js"
+                    val body = httpGet(url)
+                    if (body.isNotBlank() && body.length > 10 && !body.contains("Error")) {
+                        debug.appendLine("✅ $url (${body.length} bytes)")
+                        debug.appendLine(body)
+                        break
+                    }
+                }
+
+                // ═══ 5. Try ALL possible config.js paths ═══
+                debug.appendLine("\n--- CONFIG.JS ---")
+                val configPaths = listOf(
+                    "m/js/config/config.js",
+                    "m/js/config.js",
+                    "m/config/config.js",
+                    "m/config.js",
+                    "m/js/app/config/config.js",
+                    "m/app/config/config.js",
+                    "js/config/config.js",
+                    "js/config.js",
+                    "config/config.js",
+                    "config.js"
+                )
+                for (path in configPaths) {
+                    val body = httpGet("$base/$path")
+                    if (body.isNotBlank() && body.length > 5 &&
+                        !body.contains("Error") && !body.contains("Cannot")) {
+                        debug.appendLine("\n✅ $path (${body.length} bytes)")
+                        debug.appendLine(body)
+                    }
+                }
+
+                // ═══ 6. Search service.js for password function ═══
+                debug.appendLine("\n--- SERVICE.JS PASSWORD ---")
+                val serviceJs = httpGet("$base/m/js/service.js")
+                for (kw in listOf("paswordAlgorithmsCookie", "passwordAlgorithms", "cookWithRequest", "encode64", "function de")) {
+                    var from = 0
+                    var count = 0
+                    while (count < 2) {
+                        val idx = serviceJs.indexOf(kw, from)
+                        if (idx < 0) break
+                        val s = maxOf(0, idx - 300)
+                        val e = minOf(serviceJs.length, idx + 800)
+                        debug.appendLine("\n=== $kw (pos $idx) ===")
+                        debug.appendLine(serviceJs.substring(s, e))
+                        from = idx + 1
+                        count++
+                    }
+                }
+
+                // ═══ 7. Try ALL crypto/encode JS files ═══
+                debug.appendLine("\n--- CRYPTO JS ---")
+                for (path in listOf(
+                    "m/js/crypto.js", "m/js/sha256.js", "m/js/md5.js",
+                    "m/js/encode.js", "m/js/util.js", "m/js/libs/crypto.js",
+                    "m/js/libs/sha256.js", "m/vendor/crypto.js"
+                )) {
+                    val body = httpGet("$base/$path")
+                    if (body.isNotBlank() && body.length > 50 && !body.contains("Error")) {
+                        if (body.contains("paswordAlgorithms") || body.contains("SHA256") ||
+                            body.contains("sha256") || body.contains("encode64") ||
+                            body.contains("cookWithRequest")) {
+                            debug.appendLine("\n✅ $path (${body.length} bytes)")
+                            // Search for password-related functions
+                            for (kw in listOf("paswordAlgorithms", "encode64", "cookWithRequest", "SHA-256", "sha256")) {
+                                val idx = body.indexOf(kw, ignoreCase = true)
+                                if (idx >= 0) {
+                                    val s = maxOf(0, idx - 200)
+                                    val e = minOf(body.length, idx + 500)
+                                    debug.appendLine("\n  $kw:")
+                                    debug.appendLine(body.substring(s, e))
                                 }
                             }
-                        })
-                        .addInterceptor { chain ->
-                            val resp = chain.proceed(chain.request())
-                            for (h in resp.headers) {
-                                if (h.first.equals("Set-Cookie", ignoreCase = true)) {
-                                    debug.appendLine("  Cookie: ${h.second}")
-                                }
-                            }
-                            resp
                         }
-                        .build()
-                }
-
-                fun doPost(client: OkHttpClient, url: String, formBody: FormBody): String {
-                    val req = Request.Builder().url(url).post(formBody)
-                        .header("X-Requested-With", "XMLHttpRequest")
-                        .header("Referer", "$base/m/index.html")
-                        .build()
-                    return try {
-                        client.newCall(req).execute().body?.string() ?: ""
-                    } catch (e: Exception) {
-                        "ERROR: ${e.message}"
                     }
                 }
 
-                fun doGet(client: OkHttpClient, url: String): String {
-                    return try {
-                        client.newCall(Request.Builder().url(url).build())
-                            .execute().body?.string() ?: ""
-                    } catch (e: Exception) {
-                        "ERROR: ${e.message}"
+                // ═══ 8. Search util.js for encode64 ═══
+                debug.appendLine("\n--- UTIL.JS ---")
+                val utilJs = httpGet("$base/m/js/util.js")
+                for (kw in listOf("encode64", "paswordAlgorithms", "cookWithRequest", "SHA256", "sha256")) {
+                    var from = 0
+                    var count = 0
+                    while (count < 2) {
+                        val idx = utilJs.indexOf(kw, from, ignoreCase = true)
+                        if (idx < 0) break
+                        val s = maxOf(0, idx - 200)
+                        val e = minOf(utilJs.length, idx + 600)
+                        debug.appendLine("\n=== $kw (pos $idx) ===")
+                        debug.appendLine(utilJs.substring(s, e))
+                        from = idx + 1
+                        count++
                     }
                 }
-
-                val b64 = Base64.encodeToString(
-                    password.toByteArray(Charsets.UTF_8),
-                    Base64.NO_WRAP
-                )
-
-                // Test 1: Direct LOGIN
-                debug.appendLine("\n--- Test 1: Direct LOGIN ---")
-                val c1 = freshClient()
-                val r1 = doPost(c1, "$base/goform/goform_set_cmd_process",
-                    FormBody.Builder()
-                        .add("isTest", "false")
-                        .add("goformId", "LOGIN")
-                        .add("password", b64)
-                        .add("isForce", "1")
-                        .build())
-                debug.appendLine("Result: $r1")
-
-                // Test 2: Page → LOGIN
-                debug.appendLine("\n--- Test 2: Page → LOGIN ---")
-                val c2 = freshClient()
-                doGet(c2, "$base/m/index.html")
-                val r2 = doPost(c2, "$base/goform/goform_set_cmd_process",
-                    FormBody.Builder()
-                        .add("isTest", "false")
-                        .add("goformId", "LOGIN")
-                        .add("password", b64)
-                        .add("isForce", "1")
-                        .build())
-                debug.appendLine("Result: $r2")
-
-                // Test 3: Page → LD → LOGIN
-                debug.appendLine("\n--- Test 3: Page → LD → LOGIN ---")
-                val c3 = freshClient()
-                doGet(c3, "$base/m/index.html")
-                val ldBody = doGet(c3, "$base/goform/goform_get_cmd_process?cmd=LD")
-                val ld = extractField(ldBody, "LD")
-                debug.appendLine("LD: ${ld.take(20)}...")
-                if (ld.isNotBlank()) {
-                    val shaPass = sha256(password + ld)
-                    val r3 = doPost(c3, "$base/goform/goform_set_cmd_process",
-                        FormBody.Builder()
-                            .add("isTest", "false")
-                            .add("goformId", "LOGIN")
-                            .add("password", shaPass)
-                            .add("isForce", "1")
-                            .build())
-                    debug.appendLine("Result: $r3")
-                }
-
-                // Test 4: Page → LD → LOGOUT → LD2 → LOGIN → BLOCK
-                debug.appendLine("\n--- Test 4: Full cycle ---")
-                val c4 = freshClient()
-                doGet(c4, "$base/m/index.html")
-
-                val ldBody2 = doGet(c4, "$base/goform/goform_get_cmd_process?cmd=LD")
-                val ld2 = extractField(ldBody2, "LD")
-                debug.appendLine("LD1: ${ld2.take(20)}")
-
-                val wa = extractField(
-                    doGet(c4, "$base/goform/goform_get_cmd_process?cmd=wa_inner_version"),
-                    "wa_inner_version"
-                )
-                val cr = extractField(
-                    doGet(c4, "$base/goform/goform_get_cmd_process?cmd=cr_version"),
-                    "cr_version"
-                )
-                val rd = extractField(
-                    doGet(c4, "$base/goform/goform_get_cmd_process?cmd=RD"),
-                    "RD"
-                )
-                val ad = md5(md5(wa + cr) + rd)
-                debug.appendLine("AD: $ad")
-
-                val logoutR = doPost(c4, "$base/goform/goform_set_cmd_process",
-                    FormBody.Builder()
-                        .add("isTest", "false")
-                        .add("goformId", "LOGOUT")
-                        .add("AD", ad)
-                        .build())
-                debug.appendLine("LOGOUT: $logoutR")
-                Thread.sleep(2000)
-
-                val ldBody3 = doGet(c4, "$base/goform/goform_get_cmd_process?cmd=LD")
-                val ld3 = extractField(ldBody3, "LD")
-                debug.appendLine("LD2: ${ld3.take(20)}")
-
-                if (ld3.isNotBlank()) {
-                    val shaPass3 = sha256(password + ld3)
-                    val r4 = doPost(c4, "$base/goform/goform_set_cmd_process",
-                        FormBody.Builder()
-                            .add("isTest", "false")
-                            .add("goformId", "LOGIN")
-                            .add("password", shaPass3)
-                            .add("isForce", "1")
-                            .build())
-                    debug.appendLine("LOGIN: $r4")
-
-                    if (r4.contains("\"result\":\"0\"") || r4.contains("\"result\":0")) {
-                        debug.appendLine("\n--- BLOCK TEST ---")
-                        val blockR = doPost(c4, "$base/goform/goform_set_cmd_process",
-                            FormBody.Builder()
-                                .add("isTest", "false")
-                                .add("goformId", "setDeviceAccessControlList")
-                                .add("AclMode", "2")
-                                .add("BlackMacList", "AA:BB:CC:DD:EE:FF;")
-                                .add("WhiteMacList", "")
-                                .add("WhiteNameList", "")
-                                .add("BlackNameList", "")
-                                .add("AD", ad)
-                                .build())
-                        debug.appendLine("BLOCK: $blockR")
-                    }
-                }
-
-                // Test 5: No isForce
-                debug.appendLine("\n--- Test 5: No isForce ---")
-                val c5 = freshClient()
-                doGet(c5, "$base/m/index.html")
-                val ldBody5 = doGet(c5, "$base/goform/goform_get_cmd_process?cmd=LD")
-                val ld5 = extractField(ldBody5, "LD")
-                val shaPass5 = if (ld5.isNotBlank()) sha256(password + ld5) else b64
-                val r5 = doPost(c5, "$base/goform/goform_set_cmd_process",
-                    FormBody.Builder()
-                        .add("isTest", "false")
-                        .add("goformId", "LOGIN")
-                        .add("password", shaPass5)
-                        .build())
-                debug.appendLine("No isForce: $r5")
 
                 debug.appendLine("\n=== END ===")
                 Result.success(debug.toString())
@@ -463,6 +394,7 @@ class RouterRepository(private val storage: SecureStorage) {
             Result.failure(Exception("error: ${e.message}"))
         }
     }
+                        
 
     // ═══════════════════════════════════════════
     // BLOCK
