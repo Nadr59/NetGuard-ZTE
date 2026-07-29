@@ -272,7 +272,197 @@ class RouterRepository(private val storage: SecureStorage) {
         debug.appendLine("Login: ${result.isSuccess}")
         return result.isSuccess
     }
+    suspend fun testRouterConnection(): Result<String> {
+        return try {
+            withContext(Dispatchers.IO) {
+                val debug = StringBuilder()
+                val base = "http://${storage.getRouterIp()}"
+                val password = storage.getPassword()
 
+                debug.appendLine("=== DIAGNOSTIC v2 ===")
+                debug.appendLine("Pass: '${password.take(3)}...' (${password.length} chars)")
+
+                // ═══ Client جديد بدون أي interceptors ═══
+                fun freshClient(): OkHttpClient {
+                    val store = mutableMapOf<String, String>()
+                    return OkHttpClient.Builder()
+                        .connectTimeout(15, TimeUnit.SECONDS)
+                        .readTimeout(15, TimeUnit.SECONDS)
+                        .cookieJar(object : CookieJar {
+                            override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+                                for (c in cookies) store[c.name] = c.value
+                            }
+                            override fun loadForRequest(url: HttpUrl): List<Cookie> {
+                                return store.map { (n, v) ->
+                                    Cookie.Builder().domain(url.host).path("/").name(n).value(v).build()
+                                }
+                            }
+                        })
+                        .addInterceptor { chain ->
+                            val resp = chain.proceed(chain.request())
+                            // Log Set-Cookie
+                            for (h in resp.headers) {
+                                if (h.first.equals("Set-Cookie", ignoreCase = true)) {
+                                    debug.appendLine("  🍪 Set-Cookie: ${h.second}")
+                                }
+                            }
+                            resp
+                        }
+                        .build()
+                }
+
+                fun doPost(client: OkHttpClient, url: String, formBody: FormBody): String {
+                    val req = Request.Builder().url(url).post(formBody)
+                        .header("X-Requested-With", "XMLHttpRequest")
+                        .header("Referer", "$base/m/index.html")
+                        .build()
+                    return try { client.newCall(req).execute().body?.string() ?: "" }
+                    catch (e: Exception) { "ERROR: ${e.message}" }
+                }
+
+                fun doGet(client: OkHttpClient, url: String): String {
+                    return try { client.newCall(Request.Builder().url(url).build()).execute().body?.string() ?: "" }
+                    catch (e: Exception) { "ERROR: ${e.message}" }
+                }
+
+                // ═══ Test 1: LOGIN مباشر بدون أي طلب سابق ═══
+                debug.appendLine("\n--- Test 1: Direct LOGIN (no page, no LD) ---")
+                val c1 = freshClient()
+                val b64 = Base64.encodeToString(password.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                debug.appendLine("Base64: $b64")
+
+                val r1 = doPost(c1, "$base/goform/goform_set_cmd_process",
+                    FormBody.Builder()
+                        .add("isTest", "false")
+                        .add("goformId", "LOGIN")
+                        .add("password", b64)
+                        .add("isForce", "1")
+                        .build())
+                debug.appendLine("Result: $r1")
+
+                // ═══ Test 2: صفحة → LOGIN بـ Base64 ═══
+                debug.appendLine("\n--- Test 2: Page → LOGIN (Base64) ---")
+                val c2 = freshClient()
+                doGet(c2, "$base/m/index.html")
+
+                val r2 = doPost(c2, "$base/goform/goform_set_cmd_process",
+                    FormBody.Builder()
+                        .add("isTest", "false")
+                        .add("goformId", "LOGIN")
+                        .add("password", b64)
+                        .add("isForce", "1")
+                        .build())
+                debug.appendLine("Result: $r2")
+
+                // ═══ Test 3: صفحة → LD → LOGIN بـ SHA256(pass+LD) ═══
+                debug.appendLine("\n--- Test 3: Page → LD → LOGIN (SHA256(pass+LD)) ---")
+                val c3 = freshClient()
+                doGet(c3, "$base/m/index.html")
+
+                val ldBody = doGet(c3, "$base/goform/goform_get_cmd_process?cmd=LD")
+                val ld = extractField(ldBody, "LD")
+                debug.appendLine("LD: ${ld.take(20)}...")
+
+                if (ld.isNotBlank()) {
+                    val shaPass = sha256(password + ld)
+                    debug.appendLine("SHA256(pass+LD): $shaPass")
+
+                    val r3 = doPost(c3, "$base/goform/goform_set_cmd_process",
+                        FormBody.Builder()
+                            .add("isTest", "false")
+                            .add("goformId", "LOGIN")
+                            .add("password", shaPass)
+                            .add("isForce", "1")
+                            .build())
+                    debug.appendLine("Result: $r3")
+                }
+
+                // ═══ Test 4: صفحة → LD → LOGOUT → LD جديد → LOGIN ═══
+                debug.appendLine("\n--- Test 4: Page → LD → LOGOUT → LD2 → LOGIN ---")
+                val c4 = freshClient()
+                doGet(c4, "$base/m/index.html")
+
+                // LD
+                val ldBody2 = doGet(c4, "$base/goform/goform_get_cmd_process?cmd=LD")
+                val ld2 = extractField(ldBody2, "LD")
+                debug.appendLine("LD1: ${ld2.take(20)}")
+
+                // AD
+                val wa = extractField(doGet(c4, "$base/goform/goform_get_cmd_process?cmd=wa_inner_version"), "wa_inner_version")
+                val cr = extractField(doGet(c4, "$base/goform/goform_get_cmd_process?cmd=cr_version"), "cr_version")
+                val rd = extractField(doGet(c4, "$base/goform/goform_get_cmd_process?cmd=RD"), "RD")
+                val ad = md5(md5(wa + cr) + rd)
+                debug.appendLine("AD: $ad")
+
+                // LOGOUT
+                val logoutR = doPost(c4, "$base/goform/goform_set_cmd_process",
+                    FormBody.Builder()
+                        .add("isTest", "false")
+                        .add("goformId", "LOGOUT")
+                        .add("AD", ad)
+                        .build())
+                debug.appendLine("LOGOUT: $logoutR")
+                Thread.sleep(2000)
+
+                // LD جديد
+                val ldBody3 = doGet(c4, "$base/goform/goform_get_cmd_process?cmd=LD")
+                val ld3 = extractField(ldBody3, "LD")
+                debug.appendLine("LD2: ${ld3.take(20)}")
+
+                // LOGIN
+                if (ld3.isNotBlank()) {
+                    val shaPass3 = sha256(password + ld3)
+                    val r4 = doPost(c4, "$base/goform/goform_set_cmd_process",
+                        FormBody.Builder()
+                            .add("isTest", "false")
+                            .add("goformId", "LOGIN")
+                            .add("password", shaPass3)
+                            .add("isForce", "1")
+                            .build())
+                    debug.appendLine("LOGIN: $r4")
+
+                    // إذا نجح، جرب الحظر
+                    if (r4.contains("\"result\":\"0\"") || r4.contains("\"result\":0")) {
+                        debug.appendLine("\n--- BLOCK TEST ---")
+                        val blockR = doPost(c4, "$base/goform/goform_set_cmd_process",
+                            FormBody.Builder()
+                                .add("isTest", "false")
+                                .add("goformId", "setDeviceAccessControlList")
+                                .add("AclMode", "2")
+                                .add("BlackMacList", "AA:BB:CC:DD:EE:FF;")
+                                .add("WhiteMacList", "")
+                                .add("WhiteNameList", "")
+                                .add("BlackNameList", "")
+                                .add("AD", ad)
+                                .build())
+                        debug.appendLine("BLOCK: $blockR")
+                    }
+                }
+
+                // ═══ Test 5: بدون isForce ═══
+                debug.appendLine("\n--- Test 5: LOGIN without isForce ---")
+                val c5 = freshClient()
+                doGet(c5, "$base/m/index.html")
+
+                val ldBody5 = doGet(c5, "$base/goform/goform_get_cmd_process?cmd=LD")
+                val ld5 = extractField(ldBody5, "LD")
+
+                val shaPass5 = if (ld5.isNotBlank()) sha256(password + ld5) else b64
+                val r5 = doPost(c5, "$base/goform/goform_set_cmd_process",
+                    FormBody.Builder()
+                        .add("isTest", "false")
+                        .add("goformId", "LOGIN")
+                        .add("password", shaPass5)
+                        .build())
+                debug.appendLine("No isForce: $r5")
+
+                debug.appendLine("\n=== END ===")
+                Result.success(debug.toString())
+            }
+        } catch (e: Exception) {
+            Result.failure(Exception("error: ${e.message}"))
+        }
+    }
     suspend fun blockDevice(
         mac: String,
         currentBlockedList: List<String>
