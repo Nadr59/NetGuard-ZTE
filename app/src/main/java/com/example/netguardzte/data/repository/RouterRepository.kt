@@ -112,8 +112,7 @@ class RouterRepository(private val storage: SecureStorage) {
     // ═══════════════════════════════════════════════════════════════
     // تسجيل الدخول
     // ═══════════════════════════════════════════════════════════════
-        
-          suspend fun login(
+            suspend fun login(
         routerIp: String,
         username: String,
         password: String
@@ -121,17 +120,20 @@ class RouterRepository(private val storage: SecureStorage) {
         return try {
             withContext(Dispatchers.IO) {
                 val debug = StringBuilder()
-                debug.appendLine("=== LOGIN v3 ===")
+                debug.appendLine("=== LOGIN v4 ===")
                 debug.appendLine("Router: $routerIp")
 
-                // ═══ 1. بناء HTTP client خام ═══
                 val client = okhttp3.OkHttpClient.Builder()
                     .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
                     .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                    .followRedirects(true)
                     .cookieJar(object : okhttp3.CookieJar {
                         val store = mutableMapOf<String, String>()
                         override fun saveFromResponse(url: okhttp3.HttpUrl, cookies: List<okhttp3.Cookie>) {
-                            for (c in cookies) store[c.name] = c.value
+                            for (c in cookies) {
+                                store[c.name] = c.value
+                                debug.appendLine("  Cookie saved: ${c.name}=${c.value}")
+                            }
                         }
                         override fun loadForRequest(url: okhttp3.HttpUrl): List<okhttp3.Cookie> {
                             return store.map { (n, v) ->
@@ -143,95 +145,138 @@ class RouterRepository(private val storage: SecureStorage) {
 
                 val base = "http://$routerIp"
 
-                // ═══ 2. GET الصفحة الرئيسية ═══
-                debug.appendLine("\n--- Main page ---")
+                // ═══ 1. احمّل الصفحة الرئيسية ═══
+                debug.appendLine("\n--- Step 1: Main page ---")
                 val mainReq = okhttp3.Request.Builder()
                     .url("$base/")
-                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36")
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                    .header("Accept-Language", "en-US,en;q=0.9")
+                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
                     .build()
                 val mainResp = client.newCall(mainReq).execute()
                 val mainHtml = mainResp.body?.string() ?: ""
-                debug.appendLine("Status: ${mainResp.code}")
-                debug.appendLine("HTML length: ${mainHtml.length}")
+                debug.appendLine("Status: ${mainResp.code}, Length: ${mainHtml.length}")
 
-                // ابحث عن WEB_ATTR_IF_SUPPORT_SHA256 في HTML
-                val sha256Attr = Regex("""WEB_ATTR_IF_SUPPORT_SHA256\s*=\s*(\d+)""")
-                    .find(mainHtml)?.groupValues?.getOrNull(1) ?: ""
-                debug.appendLine("SHA256 attr from HTML: '$sha256Attr'")
+                // اطبع أول 500 حرف من HTML
+                debug.appendLine("HTML preview:")
+                debug.appendLine(mainHtml.take(500))
 
-                // ═══ 3. GET LD ═══
-                debug.appendLine("\n--- LD ---")
-                val ldReq = okhttp3.Request.Builder()
-                    .url("$base/goform/goform_get_cmd_process?cmd=LD")
-                    .header("X-Requested-With", "XMLHttpRequest")
-                    .header("Referer", base)
-                    .build()
-                val ldResp = client.newCall(ldReq).execute()
-                val ldBody = ldResp.body?.string() ?: ""
-                val ld = Regex(""""LD"\s*:\s*"([^"]*?)"""").find(ldBody)?.groupValues?.getOrNull(1) ?: ""
-                debug.appendLine("LD response: $ldBody")
-                debug.appendLine("LD value: $ld")
+                // اطبع كل الـ headers
+                debug.appendLine("Response headers:")
+                for (h in mainResp.headers) {
+                    debug.appendLine("  ${h.first}: ${h.second}")
+                }
 
-                // ═══ 4. GET wa_inner_version + cr_version + RD ═══
-                debug.appendLine("\n--- Versions + RD ---")
-                val verReq = okhttp3.Request.Builder()
-                    .url("$base/goform/goform_get_cmd_process?cmd=wa_inner_version,cr_version")
-                    .header("X-Requested-With", "XMLHttpRequest")
-                    .build()
-                val verBody = client.newCall(verReq).execute().body?.string() ?: ""
-                val waInner = Regex(""""wa_inner_version"\s*:\s*"([^"]*?)"""").find(verBody)?.groupValues?.getOrNull(1) ?: ""
-                val crVersion = Regex(""""cr_version"\s*:\s*"([^"]*?)"""").find(verBody)?.groupValues?.getOrNull(1) ?: ""
+                // ═══ 2. احمّل config.js (قد يحتوي على SHA256 attr) ═══
+                debug.appendLine("\n--- Step 2: config.js ---")
+                try {
+                    val configReq = okhttp3.Request.Builder()
+                        .url("$base/config.js")
+                        .build()
+                    val configResp = client.newCall(configReq).execute()
+                    val configBody = configResp.body?.string() ?: ""
+                    debug.appendLine("config.js (${configBody.length} bytes): ${configBody.take(300)}")
+
+                    val sha256Attr = Regex("""WEB_ATTR_IF_SUPPORT_SHA256\s*=\s*(\d+)""")
+                        .find(configBody)?.groupValues?.getOrNull(1)
+                    debug.appendLine("SHA256 attr: $sha256Attr")
+                } catch (e: Exception) {
+                    debug.appendLine("config.js error: ${e.message}")
+                }
+
+                // ═══ 3. جرّب طرق مختلفة لجلب LD ═══
+                debug.appendLine("\n--- Step 3: Fetch LD (multiple methods) ---")
+
+                var ld = ""
+
+                // الطريقة 1: nv=LD
+                try {
+                    val req = okhttp3.Request.Builder()
+                        .url("$base/goform/goform_get_cmd_process?nv=LD")
+                        .header("X-Requested-With", "XMLHttpRequest")
+                        .header("Referer", "$base/index.html")
+                        .build()
+                    val resp = client.newCall(req).execute()
+                    val body = resp.body?.string() ?: ""
+                    debug.appendLine("nv=LD: $body")
+                    ld = Regex(""""LD"\s*:\s*"([^"]*?)"""").find(body)?.groupValues?.getOrNull(1) ?: ""
+                } catch (e: Exception) { debug.appendLine("nv=LD error: ${e.message}") }
+
+                // الطريقة 2: cmd=LD
+                if (ld.isBlank()) {
+                    try {
+                        val req = okhttp3.Request.Builder()
+                            .url("$base/goform/goform_get_cmd_process?cmd=LD")
+                            .header("X-Requested-With", "XMLHttpRequest")
+                            .build()
+                        val resp = client.newCall(req).execute()
+                        val body = resp.body?.string() ?: ""
+                        debug.appendLine("cmd=LD: $body")
+                        ld = Regex(""""LD"\s*:\s*"([^"]*?)"""").find(body)?.groupValues?.getOrNull(1) ?: ""
+                    } catch (e: Exception) { debug.appendLine("cmd=LD error: ${e.message}") }
+                }
+
+                // الطريقة 3: مع multimode
+                if (ld.isBlank()) {
+                    try {
+                        val req = okhttp3.Request.Builder()
+                            .url("$base/goform/goform_get_cmd_process?cmd=LD&multimode=0")
+                            .header("X-Requested-With", "XMLHttpRequest")
+                            .build()
+                        val resp = client.newCall(req).execute()
+                        val body = resp.body?.string() ?: ""
+                        debug.appendLine("cmd=LD&multimode=0: $body")
+                        ld = Regex(""""LD"\s*:\s*"([^"]*?)"""").find(body)?.groupValues?.getOrNull(1) ?: ""
+                    } catch (e: Exception) { debug.appendLine("multimode error: ${e.message}") }
+                }
+
+                debug.appendLine("LD final: '$ld'")
+
+                // ═══ 4. جلب القيم الأخرى ═══
+                debug.appendLine("\n--- Step 4: Other values ---")
+                var waInner = ""
+                var crVersion = ""
+                var rd = ""
+
+                try {
+                    val req = okhttp3.Request.Builder()
+                        .url("$base/goform/goform_get_cmd_process?cmd=wa_inner_version,cr_version,RD")
+                        .header("X-Requested-With", "XMLHttpRequest")
+                        .build()
+                    val body = client.newCall(req).execute().body?.string() ?: ""
+                    debug.appendLine("versions+RD: $body")
+                    waInner = Regex(""""wa_inner_version"\s*:\s*"([^"]*?)"""").find(body)?.groupValues?.getOrNull(1) ?: ""
+                    crVersion = Regex(""""cr_version"\s*:\s*"([^"]*?)"""").find(body)?.groupValues?.getOrNull(1) ?: ""
+                    rd = Regex(""""RD"\s*:\s*"([^"]*?)"""").find(body)?.groupValues?.getOrNull(1) ?: ""
+                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
+
                 debug.appendLine("wa_inner=$waInner")
                 debug.appendLine("cr=$crVersion")
-
-                val rdReq = okhttp3.Request.Builder()
-                    .url("$base/goform/goform_get_cmd_process?cmd=RD")
-                    .header("X-Requested-With", "XMLHttpRequest")
-                    .build()
-                val rdBody = client.newCall(rdReq).execute().body?.string() ?: ""
-                val rd = Regex(""""RD"\s*:\s*"([^"]*?)"""").find(rdBody)?.groupValues?.getOrNull(1) ?: ""
                 debug.appendLine("RD=$rd")
 
-                // احسب AD
                 val ad = if (waInner.isNotBlank() && crVersion.isNotBlank() && rd.isNotBlank()) {
                     md5(md5(waInner + crVersion) + rd)
                 } else ""
                 debug.appendLine("AD=$ad")
 
-                // ═══ 5. جهز كل طرق التشفير ═══
-                debug.appendLine("\n--- All encodings ---")
+                // ═══ 5. جهز التشفير ═══
+                debug.appendLine("\n--- Step 5: Encodings ---")
                 val encodings = mutableListOf<Pair<String, String>>()
 
                 val b64 = Base64.encodeToString(password.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-                val sha256Pass = sha256(password)
-                val md5Pass = md5(password)
-
                 encodings.add("Base64" to b64)
                 encodings.add("Plain" to password)
 
                 if (ld.isNotBlank()) {
-                    // الطريقة 1: SHA256(SHA256(pass) + LD)
-                    encodings.add("SHA256_SHA256_LD" to sha256(sha256Pass + ld))
-                    // الطريقة 2: SHA256(pass + LD)
+                    encodings.add("SHA256_SHA256_LD" to sha256(sha256(password) + ld))
                     encodings.add("SHA256_passLD" to sha256(password + ld))
-                    // الطريقة 3: MD5(MD5(pass) + LD)
-                    encodings.add("MD5_MD5_LD" to md5(md5Pass + ld))
-                    // الطريقة 4: Base64(SHA256(pass))
-                    encodings.add("B64_SHA256" to Base64.encodeToString(sha256Pass.toByteArray(), Base64.NO_WRAP))
-                    // الطريقة 5: Base64(SHA256(SHA256(pass)+LD))
-                    encodings.add("B64_SHA256_LD" to Base64.encodeToString(sha256(sha256Pass + ld).toByteArray(), Base64.NO_WRAP))
-                    // الطريقة 6: Base64(pass + LD)
-                    encodings.add("B64_passLD" to Base64.encodeToString((password + ld).toByteArray(), Base64.NO_WRAP))
-                    // الطريقة 7: SHA256(Base64(pass) + LD)
-                    encodings.add("SHA256_B64_LD" to sha256(b64 + ld))
+                    encodings.add("MD5_MD5_LD" to md5(md5(password) + ld))
                 }
 
-                encodings.add("SHA256" to sha256Pass)
-                encodings.add("MD5" to md5Pass)
+                encodings.add("SHA256" to sha256(password))
+                encodings.add("MD5" to md5(password))
 
-                for ((label, value) in encodings) {
-                    debug.appendLine("  $label: ${value.take(40)}")
-                }
+                for ((l, v) in encodings) debug.appendLine("  $l: ${v.take(50)}")
 
                 // ═══ 6. جرب كل طريقة ═══
                 for ((label, encodedPass) in encodings) {
@@ -245,42 +290,34 @@ class RouterRepository(private val storage: SecureStorage) {
                             .add("AD", ad)
                             .build()
 
-                        val loginReq = okhttp3.Request.Builder()
+                        val req = okhttp3.Request.Builder()
                             .url("$base/goform/goform_set_cmd_process")
                             .post(formBody)
                             .header("Referer", "$base/index.html")
                             .header("X-Requested-With", "XMLHttpRequest")
                             .header("Accept", "application/json, text/javascript, */*; q=0.01")
-                            .header("Accept-Language", "en-US,en;q=0.9")
                             .build()
 
-                        val loginResp = client.newCall(loginReq).execute()
-                        val loginBody = loginResp.body?.string() ?: ""
-                        debug.appendLine("Response: $loginBody")
+                        val resp = client.newCall(req).execute()
+                        val body = resp.body?.string() ?: ""
+                        debug.appendLine("Response: $body")
+
+                        // اطبع headers الاستجابة
+                        for (h in resp.headers) {
+                            debug.appendLine("  Header: ${h.first}=${h.second}")
+                        }
 
                         when {
-                            loginBody.contains("\"result\":\"0\"") || loginBody.contains("\"result\":0") -> {
+                            body.contains("\"result\":\"0\"") || body.contains("\"result\":0") -> {
                                 debug.appendLine("✅ SUCCESS with $label!")
-
-                                // تحقق
-                                val aclReq = okhttp3.Request.Builder()
-                                    .url("$base/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList")
-                                    .header("X-Requested-With", "XMLHttpRequest")
-                                    .build()
-                                val aclBody = client.newCall(aclReq).execute().body?.string() ?: ""
-                                debug.appendLine("ACL verify: ${aclBody.take(200)}")
-
-                                // احفظ الكوكيز في RetrofitClient
                                 storage.saveCredentials(routerIp, username, password)
                                 storage.setLoggedIn(true)
                                 loginDebug = debug.toString()
-                                return@withContext Result.success("تم الاتصال بالراوتر ($label)")
+                                return@withContext Result.success("تم الاتصال ($label)")
                             }
+                            body.contains("\"result\":\"1\"") || body.contains("\"result\":1") -> {
+                                debug.appendLine("⚠️ Session exists with $label")
 
-                            loginBody.contains("\"result\":\"1\"") || loginBody.contains("\"result\":1") -> {
-                                debug.appendLine("⚠️ Session exists")
-
-                                // تحقق من ACL
                                 val aclReq = okhttp3.Request.Builder()
                                     .url("$base/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList")
                                     .header("X-Requested-With", "XMLHttpRequest")
@@ -288,22 +325,19 @@ class RouterRepository(private val storage: SecureStorage) {
                                 val aclBody = client.newCall(aclReq).execute().body?.string() ?: ""
                                 debug.appendLine("ACL: ${aclBody.take(200)}")
 
-                                if (aclBody.contains("AclMode") || aclBody.contains("BlackMacList")) {
+                                if (aclBody.contains("AclMode") || aclBody.contains("BlackMacList") || aclBody.length > 30) {
                                     debug.appendLine("✅ Session valid!")
                                     storage.saveCredentials(routerIp, username, password)
                                     storage.setLoggedIn(true)
                                     loginDebug = debug.toString()
                                     return@withContext Result.success("تم الاتصال ($label)")
                                 }
-                                debug.appendLine("Session not usable")
                             }
-
-                            loginBody.contains("\"result\":\"3\"") || loginBody.contains("\"result\":3") -> {
+                            body.contains("\"result\":\"3\"") || body.contains("\"result\":3") -> {
                                 debug.appendLine("❌ Wrong with $label")
                             }
-
                             else -> {
-                                debug.appendLine("❓ Unknown: ${loginBody.take(100)}")
+                                debug.appendLine("❓ Unknown: ${body.take(100)}")
                             }
                         }
                     } catch (e: Exception) {
@@ -312,13 +346,16 @@ class RouterRepository(private val storage: SecureStorage) {
                 }
 
                 debug.appendLine("\n=== ALL FAILED ===")
+                debug.appendLine("\n*** أرسل لي كل هذا النص ***")
                 loginDebug = debug.toString()
-                Result.failure(Exception("فشل الدخول - أرسل لي محتوى Debug"))
+                Result.failure(Exception("فشل الدخول - انسخ Debug وأرسله لي"))
             }
         } catch (e: Exception) {
             Result.failure(Exception("خطأ: ${e.message}"))
         }
-    }              
+    }
+        
+        
     // ═══════════════════════════════════════════
     // التأكد من تسجيل الدخول
     // ═══════════════════════════════════════════
