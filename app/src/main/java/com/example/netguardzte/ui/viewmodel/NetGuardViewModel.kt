@@ -330,7 +330,13 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
             _uiState.value = _uiState.value.copy(crashInfo = "")
         } catch (_: Exception) {}
     }
+     // في ViewModel:
+suspend fun diagnose(): String {
+    val result = repository.diagnosePost()
+    return result.getOrDefault("No result")
+}
 
+// أو في UI: اجعل زر "اختبار" يستدعي diagnosePost()
     private fun saveError(text: String) {
         try {
             val prefs = getApplication<Application>()
