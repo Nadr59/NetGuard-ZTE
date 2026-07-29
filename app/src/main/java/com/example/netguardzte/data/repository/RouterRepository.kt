@@ -28,6 +28,13 @@ class RouterRepository(private val storage: SecureStorage) {
     var allCommandsDebug: String = ""
         private set
 
+    // ═══ مخزن الكوكيز المشترك ═══
+    private val sharedCookieStore = mutableMapOf<String, String>()
+
+    // ═══════════════════════════════════════════
+    // أدوات مساعدة
+    // ═══════════════════════════════════════════
+
     private fun encodeParam(value: String): String = URLEncoder.encode(value, "UTF-8")
 
     private fun isSuccess(body: String): Boolean {
@@ -54,66 +61,9 @@ class RouterRepository(private val storage: SecureStorage) {
         return ""
     }
 
-    private fun readCookies(response: Response<*>, debug: StringBuilder) {
-        try {
-            for (c in response.headers().values("Set-Cookie")) {
-                val parts = c.split(";")[0].split("=", limit = 2)
-                if (parts.size == 2) {
-                    RetrofitClient.setSessionCookie(parts[0].trim(), parts[1].trim())
-                }
-            }
-            val cookies = RetrofitClient.getCookiesString()
-            cookieDebug = "Cookies: $cookies"
-            debug.appendLine(cookieDebug)
-        } catch (_: Exception) {}
-    }
-
-    // ═══════════════════════════════════════════════
-    // جلب قيمة من الراوتر
-    // ═══════════════════════════════════════════════
-
-    private suspend fun fetchValue(api: ZteRouterApi, name: String, debug: StringBuilder): String {
-        try {
-            val r = api.getGenericCmd(cmd = name)
-            val body = r.body()?.string() ?: ""
-            debug.appendLine("GET $name → ${body.take(120)}")
-            val value = extractJsonField(body, name)
-            if (value.isNotBlank()) return value
-        } catch (e: Exception) {
-            debug.appendLine("GET $name error: ${e.message}")
-        }
-        return ""
-    }
-
-    // ═══════════════════════════════════════════════
-    // حساب AD
-    // ═══════════════════════════════════════════════
-
-    private suspend fun computeAd(api: ZteRouterApi, debug: StringBuilder): String {
-        try {
-            val waInner = fetchValue(api, "wa_inner_version", debug)
-            val crVersion = fetchValue(api, "cr_version", debug)
-            val rd = fetchValue(api, "RD", debug)
-
-            if (waInner.isBlank() || crVersion.isBlank() || rd.isBlank()) {
-                debug.appendLine("⚠️ Missing data for AD")
-                return ""
-            }
-
-            val ad = md5(md5(waInner + crVersion) + rd)
-            debug.appendLine("AD=$ad")
-            return ad
-        } catch (e: Exception) {
-            debug.appendLine("AD error: ${e.message}")
-            return ""
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // تسجيل الدخول
-    // ═══════════════════════════════════════════════════════════════
-                // ═══ مخزن الكوكيز المش ═══
-    private val sharedCookieStore = mutableMapOf<String, String>()
+    // ═══════════════════════════════════════════
+    // إنشاء OkHttp مع كوكيز مشتركة
+    // ═══════════════════════════════════════════
 
     private fun createRawClient(debug: StringBuilder): okhttp3.OkHttpClient {
         return okhttp3.OkHttpClient.Builder()
@@ -123,7 +73,6 @@ class RouterRepository(private val storage: SecureStorage) {
                 override fun saveFromResponse(url: okhttp3.HttpUrl, cookies: List<okhttp3.Cookie>) {
                     for (c in cookies) {
                         sharedCookieStore[c.name] = c.value
-                        debug.appendLine("  🍪 Cookie: ${c.name}=${c.value.take(20)}")
                     }
                 }
                 override fun loadForRequest(url: okhttp3.HttpUrl): List<okhttp3.Cookie> {
@@ -140,6 +89,10 @@ class RouterRepository(private val storage: SecureStorage) {
             RetrofitClient.setSessionCookie(name, value)
         }
     }
+
+    // ═══════════════════════════════════════════
+    // تسجيل الدخول
+    // ═══════════════════════════════════════════
 
     suspend fun login(
         routerIp: String,
@@ -158,62 +111,51 @@ class RouterRepository(private val storage: SecureStorage) {
 
                 // ═══ 1. GET الصفحة الرئيسية ═══
                 debug.appendLine("\n--- Main page ---")
-                val mainReq = okhttp3.Request.Builder()
-                    .url("$base/")
-                    .header("Accept", "text/html,application/xhtml+xml,*/*")
-                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36")
-                    .build()
-                val mainResp = client.newCall(mainReq).execute()
-                val mainHtml = mainResp.body?.string() ?: ""
-                debug.appendLine("Status: ${mainResp.code}, HTML: ${mainHtml.length} bytes")
-                debug.appendLine("Cookies after main: ${sharedCookieStore.entries.joinToString { "${it.key}=${it.value.take(15)}" }}")
-
-                // اطبع أول 300 حرف من HTML
-                debug.appendLine("HTML: ${mainHtml.take(300)}")
+                try {
+                    val mainReq = okhttp3.Request.Builder()
+                        .url("$base/")
+                        .header("Accept", "text/html,application/xhtml+xml,*/*")
+                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36")
+                        .build()
+                    val mainResp = client.newCall(mainReq).execute()
+                    val mainHtml = mainResp.body?.string() ?: ""
+                    debug.appendLine("Status: ${mainResp.code}, HTML: ${mainHtml.length}")
+                    debug.appendLine("HTML: ${mainHtml.take(300)}")
+                    debug.appendLine("Cookies: ${sharedCookieStore.entries.joinToString { "${it.key}=${it.value.take(15)}" }}")
+                } catch (e: Exception) { debug.appendLine("Main page error: ${e.message}") }
 
                 // ═══ 2. GET config.js ═══
                 debug.appendLine("\n--- config.js ---")
                 var sha256Attr = ""
                 try {
-                    val configReq = okhttp3.Request.Builder()
-                        .url("$base/config.js")
-                        .build()
+                    val configReq = okhttp3.Request.Builder().url("$base/config.js").build()
                     val configBody = client.newCall(configReq).execute().body?.string() ?: ""
                     debug.appendLine("config.js: ${configBody.take(300)}")
-                    sha256Attr = Regex("""WEB_ATTR_IF_SUPPORT_SHA256\s*=\s*(\d+)""")
-                        .find(configBody)?.groupValues?.getOrNull(1) ?: ""
+                    sha256Attr = Regex("""WEB_ATTR_IF_SUPPORT_SHA256\s*=\s*(\d+)""").find(configBody)?.groupValues?.getOrNull(1) ?: ""
                     debug.appendLine("SHA256 attr: '$sha256Attr'")
                 } catch (e: Exception) { debug.appendLine("config.js error: ${e.message}") }
 
                 // ═══ 3. GET LD ═══
                 debug.appendLine("\n--- LD ---")
                 var ld = ""
-                for (method in listOf(
-                    "$base/goform/goform_get_cmd_process?nv=LD",
-                    "$base/goform/goform_get_cmd_process?cmd=LD",
-                    "$base/goform/goform_get_cmd_process?cmd=LD&multimode=0"
-                )) {
+                for (method in listOf("$base/goform/goform_get_cmd_process?nv=LD", "$base/goform/goform_get_cmd_process?cmd=LD")) {
                     try {
-                        val req = okhttp3.Request.Builder().url(method)
-                            .header("X-Requested-With", "XMLHttpRequest")
-                            .header("Referer", "$base/index.html")
-                            .build()
+                        val req = okhttp3.Request.Builder().url(method).header("X-Requested-With", "XMLHttpRequest").build()
                         val body = client.newCall(req).execute().body?.string() ?: ""
                         debug.appendLine("$method → $body")
                         ld = Regex(""""LD"\s*:\s*"([^"]*?)"""").find(body)?.groupValues?.getOrNull(1) ?: ""
                         if (ld.isNotBlank()) break
-                    } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
+                    } catch (e: Exception) { debug.appendLine("LD error: ${e.message}") }
                 }
                 debug.appendLine("LD: '$ld'")
 
-                // ═══ 4. GET wa_inner_version + cr_version + RD ═══
+                // ═══ 4. GET wa_inner + cr_version + RD ═══
                 debug.appendLine("\n--- Versions ---")
                 var waInner = ""; var crVersion = ""; var rd = ""
                 try {
                     val req = okhttp3.Request.Builder()
                         .url("$base/goform/goform_get_cmd_process?cmd=wa_inner_version,cr_version,RD")
-                        .header("X-Requested-With", "XMLHttpRequest")
-                        .build()
+                        .header("X-Requested-With", "XMLHttpRequest").build()
                     val body = client.newCall(req).execute().body?.string() ?: ""
                     debug.appendLine("Response: $body")
                     waInner = Regex(""""wa_inner_version"\s*:\s*"([^"]*?)"""").find(body)?.groupValues?.getOrNull(1) ?: ""
@@ -221,28 +163,23 @@ class RouterRepository(private val storage: SecureStorage) {
                     rd = Regex(""""RD"\s*:\s*"([^"]*?)"""").find(body)?.groupValues?.getOrNull(1) ?: ""
                 } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
 
-                val ad = if (waInner.isNotBlank() && crVersion.isNotBlank() && rd.isNotBlank()) {
-                    md5(md5(waInner + crVersion) + rd)
-                } else ""
+                val ad = if (waInner.isNotBlank() && crVersion.isNotBlank() && rd.isNotBlank()) md5(md5(waInner + crVersion) + rd) else ""
                 debug.appendLine("wa=$waInner cr=$crVersion RD=$rd AD=$ad")
 
                 // ═══ 5. جهز التشفير ═══
                 debug.appendLine("\n--- Encodings ---")
                 val encodings = mutableListOf<Pair<String, String>>()
-
                 val b64 = Base64.encodeToString(password.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
                 val sha256P = sha256(password)
                 val md5P = md5(password)
 
                 encodings.add("Base64" to b64)
                 encodings.add("Plain" to password)
-
                 if (ld.isNotBlank()) {
                     encodings.add("SHA256_SHA256_LD" to sha256(sha256P + ld))
                     encodings.add("SHA256_passLD" to sha256(password + ld))
                     encodings.add("MD5_MD5_LD" to md5(md5P + ld))
                 }
-
                 encodings.add("SHA256" to sha256P)
                 encodings.add("MD5" to md5P)
 
@@ -258,16 +195,14 @@ class RouterRepository(private val storage: SecureStorage) {
                             .add("isTest", "false")
                             .add("goformId", "LOGIN")
                             .add("password", encodedPass)
-                            .add("AD", ad)
-                            .build()
+                            .add("AD", ad).build()
 
                         val req = okhttp3.Request.Builder()
                             .url("$base/goform/goform_set_cmd_process")
                             .post(formBody)
                             .header("Referer", "$base/index.html")
                             .header("X-Requested-With", "XMLHttpRequest")
-                            .header("Accept", "application/json, text/javascript, */*; q=0.01")
-                            .build()
+                            .header("Accept", "application/json, text/javascript, */*; q=0.01").build()
 
                         val resp = client.newCall(req).execute()
                         val body = resp.body?.string() ?: ""
@@ -276,50 +211,31 @@ class RouterRepository(private val storage: SecureStorage) {
 
                         when {
                             body.contains("\"result\":\"0\"") || body.contains("\"result\":0") -> {
-                                debug.appendLine("✅ SUCCESS!")
-
-                                // ═══ انسخ الكوكيز لـ Retrofit ═══
+                                debug.appendLine("✅ SUCCESS with $label!")
                                 syncCookiesToRetrofit()
-                                debug.appendLine("Retrofit cookies: ${RetrofitClient.getCookiesString()}")
-
-                                // تحقق
-                                val aclBody = verifySession(client, base, debug)
-                                debug.appendLine("ACL: ${aclBody.take(200)}")
-
+                                verifySession(client, base, debug)
                                 storage.saveCredentials(routerIp, username, password)
                                 storage.setLoggedIn(true)
                                 loginDebug = debug.toString()
                                 return@withContext Result.success("تم الاتصال ($label)")
                             }
-
                             body.contains("\"result\":\"1\"") || body.contains("\"result\":1") -> {
                                 debug.appendLine("⚠️ Session exists")
-
-                                // ═══ انسخ الكوكيز لـ Retrofit ═══
                                 syncCookiesToRetrofit()
-                                debug.appendLine("Retrofit cookies: ${RetrofitClient.getCookiesString()}")
-
                                 val aclBody = verifySession(client, base, debug)
                                 debug.appendLine("ACL: ${aclBody.take(200)}")
-
-                                if (aclBody.contains("AclMode") || aclBody.contains("BlackMacList")) {
+                                if (aclBody.contains("AclMode") || aclBody.contains("BlackMacList") || aclBody.length > 30) {
                                     debug.appendLine("✅ Session valid!")
                                     storage.saveCredentials(routerIp, username, password)
                                     storage.setLoggedIn(true)
                                     loginDebug = debug.toString()
                                     return@withContext Result.success("تم الاتصال ($label)")
                                 }
-                                debug.appendLine("Session not valid, trying next...")
                             }
-
-                            body.contains("\"result\":\"3\"") || body.contains("\"result\":3") -> {
-                                debug.appendLine("❌ Wrong password")
-                            }
-                            else -> debug.appendLine("❓ Unknown")
+                            body.contains("\"result\":\"3\"") || body.contains("\"result\":3") -> debug.appendLine("❌ Wrong password")
+                            else -> debug.appendLine("❓ Unknown: ${body.take(100)}")
                         }
-                    } catch (e: Exception) {
-                        debug.appendLine("$label error: ${e.message}")
-                    }
+                    } catch (e: Exception) { debug.appendLine("$label error: ${e.message}") }
                 }
 
                 debug.appendLine("\n=== ALL FAILED ===")
@@ -331,15 +247,18 @@ class RouterRepository(private val storage: SecureStorage) {
         }
     }
 
+    // ═══════════════════════════════════════════
+    // التحقق من الجلسة
+    // ═══════════════════════════════════════════
+
     private fun verifySession(client: okhttp3.OkHttpClient, base: String, debug: StringBuilder): String {
         return try {
             val req = okhttp3.Request.Builder()
                 .url("$base/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList")
                 .header("X-Requested-With", "XMLHttpRequest")
-                .header("Referer", "$base/index.html")
-                .build()
+                .header("Referer", "$base/index.html").build()
             val body = client.newCall(req).execute().body?.string() ?: ""
-            debug.appendLine("ACL verify: $body")
+            debug.appendLine("ACL verify: ${body.take(200)}")
             body
         } catch (e: Exception) {
             debug.appendLine("ACL verify error: ${e.message}")
@@ -347,13 +266,13 @@ class RouterRepository(private val storage: SecureStorage) {
         }
     }
 
+    // ═══════════════════════════════════════════
+    // التأكد من تسجيل الدخول
+    // ═══════════════════════════════════════════
+
     private suspend fun ensureLoggedIn(api: ZteRouterApi, debug: StringBuilder): Boolean {
         try {
             debug.appendLine("\n--- ensureLoggedIn ---")
-
-            // تحقق من الكوكيز
-            debug.appendLine("Shared cookies: ${sharedCookieStore.entries.joinToString { "${it.key}=${it.value.take(15)}" }}")
-            debug.appendLine("Retrofit cookies: ${RetrofitClient.getCookiesString()}")
 
             // حاول قراءة ACL
             val aclR = api.getGenericCmd(cmd = "queryDeviceAccessControlList")
@@ -370,12 +289,10 @@ class RouterRepository(private val storage: SecureStorage) {
             val result = login(storage.getRouterIp(), storage.getUsername(), storage.getPassword())
             debug.appendLine("Re-login: ${result.isSuccess}")
 
-            // ═══ أعد مزامنة الكوكيز بعد login ═══
             syncCookiesToRetrofit()
             debug.appendLine("Retrofit cookies after re-login: ${RetrofitClient.getCookiesString()}")
 
             if (result.isSuccess) {
-                // تحقق مرة أخرى
                 val aclR2 = api.getGenericCmd(cmd = "queryDeviceAccessControlList")
                 val aclBody2 = aclR2.body()?.string() ?: ""
                 debug.appendLine("ACL after re-login: ${aclBody2.take(200)}")
@@ -383,33 +300,6 @@ class RouterRepository(private val storage: SecureStorage) {
             }
 
             return false
-        } catch (e: Exception) {
-            debug.appendLine("ensureLoggedIn error: ${e.message}")
-            return false
-        }
-    }
-        
-    // ═══════════════════════════════════════════
-    // التأكد من تسجيل الدخول
-    // ═══════════════════════════════════════════
-
-    private suspend fun ensureLoggedIn(api: ZteRouterApi, debug: StringBuilder): Boolean {
-        try {
-            // اختبر مباشرة بقراءة ACL
-            val aclR = api.getGenericCmd(cmd = "queryDeviceAccessControlList")
-            val aclBody = aclR.body()?.string() ?: ""
-            debug.appendLine("ACL check: ${aclBody.take(200)}")
-
-            if (aclBody.contains("AclMode") || aclBody.contains("BlackMacList")) {
-                debug.appendLine("✅ Authenticated")
-                return true
-            }
-
-            // غير مسجل — أعد الدخول
-            debug.appendLine("Not authenticated, re-logging...")
-            val result = login(storage.getRouterIp(), storage.getUsername(), storage.getPassword())
-            debug.appendLine("Re-login: ${result.isSuccess}")
-            return result.isSuccess
         } catch (e: Exception) {
             debug.appendLine("ensureLoggedIn error: ${e.message}")
             return false
@@ -429,9 +319,7 @@ class RouterRepository(private val storage: SecureStorage) {
 
                 debug.appendLine("=== DEVICE SCAN ===")
 
-                try {
-                    Runtime.getRuntime().exec(arrayOf("sh", "-c", "ip neigh flush dev wlan0")).waitFor()
-                } catch (_: Exception) {}
+                try { Runtime.getRuntime().exec(arrayOf("sh", "-c", "ip neigh flush dev wlan0")).waitFor() } catch (_: Exception) {}
 
                 for (i in 1..50) {
                     try {
@@ -444,9 +332,7 @@ class RouterRepository(private val storage: SecureStorage) {
                 var devices = readArpFromAllSources(debug)
                 debug.appendLine("Found: ${devices.size}")
 
-                if (devices.isEmpty()) {
-                    devices = readFromRouterApi(debug)
-                }
+                if (devices.isEmpty()) devices = readFromRouterApi(debug)
 
                 if (devices.isNotEmpty()) {
                     allCommandsDebug = debug.toString()
@@ -456,9 +342,7 @@ class RouterRepository(private val storage: SecureStorage) {
                 allCommandsDebug = debug.toString()
                 Result.failure(Exception("لم يتم العثور على أجهزة"))
             }
-        } catch (e: Exception) {
-            Result.failure(Exception("فشل: ${e.message}"))
-        }
+        } catch (e: Exception) { Result.failure(Exception("فشل: ${e.message}")) }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -478,7 +362,7 @@ class RouterRepository(private val storage: SecureStorage) {
                 if (!authenticated) {
                     lastRawResponse = debug.toString()
                     allCommandsDebug = debug.toString()
-                    return@withContext Result.failure(Exception("غير مسجل دخول - أغلق المتصفح أولاً"))
+                    return@withContext Result.failure(Exception("غير مسجل دخول"))
                 }
 
                 val currentAcl = readCurrentACL(api, debug)
@@ -529,14 +413,12 @@ class RouterRepository(private val storage: SecureStorage) {
                     return@withContext Result.failure(Exception("خطأ: ${e.message}"))
                 }
             }
-        } catch (e: Exception) {
-            Result.failure(Exception("خطأ: ${e.message}"))
-        }
+        } catch (e: Exception) { Result.failure(Exception("خطأ: ${e.message}")) }
     }
 
-    // ═══════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════
     // إلغاء حظر
-    // ═══════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════
 
     suspend fun unblockDevice(mac: String, currentBlockedList: List<String>): Result<String> {
         return try {
@@ -582,9 +464,7 @@ class RouterRepository(private val storage: SecureStorage) {
                 if (isSuccess(responseBody)) Result.success("تم إلغاء حظر $macUpper")
                 else Result.failure(Exception("فشل: $responseBody"))
             }
-        } catch (e: Exception) {
-            Result.failure(Exception("خطأ: ${e.message}"))
-        }
+        } catch (e: Exception) { Result.failure(Exception("خطأ: ${e.message}")) }
     }
 
     // ═══════════════════════════════════════════
@@ -608,10 +488,12 @@ class RouterRepository(private val storage: SecureStorage) {
                 allCommandsDebug = debug.toString()
                 Result.success(macs)
             }
-        } catch (e: Exception) {
-            Result.failure(Exception("فشل: ${e.message}"))
-        }
+        } catch (e: Exception) { Result.failure(Exception("فشل: ${e.message}")) }
     }
+
+    // ═══════════════════════════════════════════
+    // قراءة ACL
+    // ═══════════════════════════════════════════
 
     private suspend fun readCurrentACL(api: ZteRouterApi, debug: StringBuilder): Map<String, String> {
         val result = mutableMapOf<String, String>()
@@ -624,6 +506,32 @@ class RouterRepository(private val storage: SecureStorage) {
             }
         } catch (e: Exception) { debug.appendLine("ACL error: ${e.message}") }
         return result
+    }
+
+    // ═══════════════════════════════════════════
+    // حساب AD
+    // ═══════════════════════════════════════════
+
+    private suspend fun computeAd(api: ZteRouterApi, debug: StringBuilder): String {
+        try {
+            val waInner = fetchValue(api, "wa_inner_version", debug)
+            val crVersion = fetchValue(api, "cr_version", debug)
+            val rd = fetchValue(api, "RD", debug)
+            if (waInner.isBlank() || crVersion.isBlank() || rd.isBlank()) return ""
+            val ad = md5(md5(waInner + crVersion) + rd)
+            debug.appendLine("AD=$ad")
+            return ad
+        } catch (e: Exception) { debug.appendLine("AD error: ${e.message}"); return "" }
+    }
+
+    private suspend fun fetchValue(api: ZteRouterApi, name: String, debug: StringBuilder): String {
+        try {
+            val r = api.getGenericCmd(cmd = name)
+            val body = r.body()?.string() ?: ""
+            val value = extractJsonField(body, name)
+            if (value.isNotBlank()) return value
+        } catch (_: Exception) {}
+        return ""
     }
 
     // ═══════════════════════════════════════════
@@ -642,28 +550,18 @@ class RouterRepository(private val storage: SecureStorage) {
                     debug.appendLine("Language: ${r.body()?.string()}")
                 } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
 
-                debug.appendLine("\n=== Cookies ===")
-                debug.appendLine("Current: ${RetrofitClient.getCookiesString()}")
+                debug.appendLine("\nCookies: ${RetrofitClient.getCookiesString()}")
+                debug.appendLine("Shared: ${sharedCookieStore.entries.joinToString { "${it.key}=${it.value.take(15)}" }}")
 
                 debug.appendLine("\n=== AD TEST ===")
-                val ad = computeAd(api, debug)
+                computeAd(api, debug)
 
                 debug.appendLine("\n=== ACL TEST ===")
-                val acl = readCurrentACL(api, debug)
-                debug.appendLine("ACL=$acl")
-
-                debug.appendLine("\n=== LD TEST ===")
-                val ld = fetchValue(api, "LD", debug)
-
-                debug.appendLine("\n=== AUTH TEST ===")
-                val loginfo = api.getGenericCmd(cmd = "loginfo")
-                debug.appendLine("loginfo: ${loginfo.body()?.string()}")
+                readCurrentACL(api, debug)
 
                 Result.success(debug.toString())
             }
-        } catch (e: Exception) {
-            Result.failure(Exception("Test: ${e.message}"))
-        }
+        } catch (e: Exception) { Result.failure(Exception("Test: ${e.message}")) }
     }
 
     // ═══════════════════════════════════════════
@@ -677,6 +575,7 @@ class RouterRepository(private val storage: SecureStorage) {
             }
         } catch (_: Exception) {}
         storage.setLoggedIn(false)
+        sharedCookieStore.clear()
         RetrofitClient.reset()
     }
 
@@ -758,10 +657,7 @@ class RouterRepository(private val storage: SecureStorage) {
                     val r = api.getGenericCmd(cmd = cmd)
                     val b = r.body()?.string() ?: ""
                     debug.appendLine("  [$cmd]: ${b.take(100)}")
-                    if (b.length > 30) {
-                        val d = parseDevices(b)
-                        if (d.isNotEmpty()) return d
-                    }
+                    if (b.length > 30) { val d = parseDevices(b); if (d.isNotEmpty()) return d }
                 } catch (e: Exception) { debug.appendLine("  [$cmd] error: ${e.message}") }
             }
         } catch (e: Exception) { debug.appendLine("API error: ${e.message}") }
