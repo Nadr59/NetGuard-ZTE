@@ -94,7 +94,7 @@ class RouterRepository(private val storage: SecureStorage) {
     // تسجيل الدخول
     // ═══════════════════════════════════════════
         
-        suspend fun login(
+             suspend fun login(
         routerIp: String,
         username: String,
         password: String
@@ -102,90 +102,76 @@ class RouterRepository(private val storage: SecureStorage) {
         return try {
             withContext(Dispatchers.IO) {
                 val debug = StringBuilder()
-                debug.appendLine("=== LOGIN v6 ===")
+                debug.appendLine("=== LOGIN v7 ===")
                 debug.appendLine("Router: $routerIp")
 
                 // ═══ 1. اتصال نظيف ═══
                 RetrofitClient.reset()
                 RetrofitClient.setRouterAddress(routerIp)
-                val api = RetrofitClient.getApi()
+                val client = RetrofitClient.getHttpClient()
+                val base = "http://$routerIp"
 
-                // ═══ 2. حمّل صفحة الدخول الحقيقية (وليس صفحة التحويل) ═══
+                // ═══ 2. حمّل صفحة الدخول ═══
                 debug.appendLine("\n--- Login page ---")
                 try {
-                    val loginPage = api.getLoginPage()
-                    val html = loginPage.body()?.string() ?: ""
-                    debug.appendLine("Status: ${loginPage.code()}, HTML: ${html.length}")
-                    debug.appendLine("HTML: ${html.take(500)}")
+                    val req = okhttp3.Request.Builder()
+                        .url("$base/m/index.html")
+                        .header("Accept", "text/html,*/*")
+                        .build()
+                    val resp = client.newCall(req).execute()
+                    val html = resp.body?.string() ?: ""
+                    debug.appendLine("Status: ${resp.code}, HTML: ${html.length}")
+                    debug.appendLine("HTML: ${html.take(300)}")
                     debug.appendLine("Cookies: ${RetrofitClient.getCookiesString()}")
-                } catch (e: Exception) {
-                    debug.appendLine("Login page error: ${e.message}")
-                }
+                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
 
-                // ═══ 3. حمّل config.js من مجلد m ═══
+                // ═══ 3. حمّل config.js ═══
                 debug.appendLine("\n--- config.js ---")
                 var sha256Attr = ""
-                try {
-                    val configResp = api.getConfigJs()
-                    val configBody = configResp.body()?.string() ?: ""
-                    debug.appendLine("config.js: ${configBody.take(500)}")
-                    sha256Attr = Regex("""WEB_ATTR_IF_SUPPORT_SHA256\s*=\s*(\d+)""")
-                        .find(configBody)?.groupValues?.getOrNull(1) ?: ""
-                    debug.appendLine("SHA256 attr: '$sha256Attr'")
-                } catch (e: Exception) {
-                    debug.appendLine("config.js error: ${e.message}")
+                for (path in listOf("m/config.js", "config.js", "js/config.js")) {
+                    try {
+                        val req = okhttp3.Request.Builder().url("$base/$path").build()
+                        val body = client.newCall(req).execute().body?.string() ?: ""
+                        if (!body.contains("Document Error") && body.isNotBlank()) {
+                            debug.appendLine("$path: ${body.take(300)}")
+                            sha256Attr = Regex("""WEB_ATTR_IF_SUPPORT_SHA256\s*=\s*(\d+)""").find(body)?.groupValues?.getOrNull(1) ?: ""
+                            debug.appendLine("SHA256 attr: '$sha256Attr'")
+                            break
+                        }
+                    } catch (_: Exception) {}
                 }
 
-                // ═══ 4. اجلب LD (منفصل) ═══
+                // ═══ 4. اجلب LD ═══
                 debug.appendLine("\n--- LD ---")
                 var ld = ""
                 try {
-                    val ldR = api.getGenericCmd(cmd = "LD")
-                    val ldBody = ldR.body()?.string() ?: ""
-                    debug.appendLine("LD: $ldBody")
-                    ld = Regex(""""LD"\s*:\s*"([^"]*?)"""").find(ldBody)?.groupValues?.getOrNull(1) ?: ""
-                } catch (e: Exception) {
-                    debug.appendLine("LD error: ${e.message}")
+                    val req = okhttp3.Request.Builder()
+                        .url("$base/goform/goform_get_cmd_process?cmd=LD")
+                        .header("X-Requested-With", "XMLHttpRequest").build()
+                    val body = client.newCall(req).execute().body?.string() ?: ""
+                    debug.appendLine("LD: $body")
+                    ld = Regex(""""LD"\s*:\s*"([^"]*?)"""").find(body)?.groupValues?.getOrNull(1) ?: ""
+                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
+
+                // ═══ 5. اجلب wa_inner + cr + RD (منفصلة) ═══
+                debug.appendLine("\n--- Versions ---")
+                var waInner = ""; var crVersion = ""; var rd = ""
+                for (name in listOf("wa_inner_version", "cr_version", "RD")) {
+                    try {
+                        val req = okhttp3.Request.Builder()
+                            .url("$base/goform/goform_get_cmd_process?cmd=$name")
+                            .header("X-Requested-With", "XMLHttpRequest").build()
+                        val body = client.newCall(req).execute().body?.string() ?: ""
+                        debug.appendLine("$name: $body")
+                        val value = Regex(""""$name"\s*:\s*"([^"]*?)"""").find(body)?.groupValues?.getOrNull(1) ?: ""
+                        when (name) { "wa_inner_version" -> waInner = value; "cr_version" -> crVersion = value; "RD" -> rd = value }
+                    } catch (e: Exception) { debug.appendLine("$name error: ${e.message}") }
                 }
-                debug.appendLine("LD value: '$ld'")
 
-                // ═══ 5. اجلب wa_inner_version (منفصل) ═══
-                debug.appendLine("\n--- wa_inner_version ---")
-                var waInner = ""
-                try {
-                    val r = api.getGenericCmd(cmd = "wa_inner_version")
-                    val body = r.body()?.string() ?: ""
-                    debug.appendLine("wa_inner: $body")
-                    waInner = Regex(""""wa_inner_version"\s*:\s*"([^"]*?)"""").find(body)?.groupValues?.getOrNull(1) ?: ""
-                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
+                val ad = if (waInner.isNotBlank() && crVersion.isNotBlank() && rd.isNotBlank()) md5(md5(waInner + crVersion) + rd) else ""
+                debug.appendLine("wa=$waInner cr=$crVersion RD=$rd AD=$ad")
 
-                // ═══ 6. اجلب cr_version (منفصل) ═══
-                var crVersion = ""
-                try {
-                    val r = api.getGenericCmd(cmd = "cr_version")
-                    val body = r.body()?.string() ?: ""
-                    debug.appendLine("cr: $body")
-                    crVersion = Regex(""""cr_version"\s*:\s*"([^"]*?)"""").find(body)?.groupValues?.getOrNull(1) ?: ""
-                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
-
-                // ═══ 7. اجلب RD (منفصل) ═══
-                var rd = ""
-                try {
-                    val r = api.getGenericCmd(cmd = "RD")
-                    val body = r.body()?.string() ?: ""
-                    debug.appendLine("RD: $body")
-                    rd = Regex(""""RD"\s*:\s*"([^"]*?)"""").find(body)?.groupValues?.getOrNull(1) ?: ""
-                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
-
-                debug.appendLine("wa=$waInner cr=$crVersion RD=$rd")
-
-                // ═══ 8. احسب AD ═══
-                val ad = if (waInner.isNotBlank() && crVersion.isNotBlank() && rd.isNotBlank()) {
-                    md5(md5(waInner + crVersion) + rd)
-                } else ""
-                debug.appendLine("AD=$ad")
-
-                // ═══ 9. شفر كلمة المرور ═══
+                // ═══ 6. جهز التشفير ═══
                 debug.appendLine("\n--- Encodings ---")
                 val encodings = mutableListOf<Pair<String, String>>()
                 val b64 = Base64.encodeToString(password.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
@@ -202,96 +188,140 @@ class RouterRepository(private val storage: SecureStorage) {
                 encodings.add("SHA256" to sha256P)
                 encodings.add("MD5" to md5P)
 
-                // ═══ 10. إذا عرفنا SHA256 attr، رتب التشفير ═══
                 if (sha256Attr == "2" && ld.isNotBlank()) {
-                    debug.appendLine("SHA256=2: خصّص SHA256_SHA256_LD أولاً")
-                    val preferred = encodings.find { it.first == "SHA256_SHA256_LD" }
-                    if (preferred != null) {
-                        encodings.remove(preferred)
-                        encodings.add(0, preferred)
-                    }
-                } else if (sha256Attr == "1") {
-                    debug.appendLine("SHA256=1: خصّص Base64 أولاً")
-                    val preferred = encodings.find { it.first == "Base64" }
-                    if (preferred != null) {
-                        encodings.remove(preferred)
-                        encodings.add(0, preferred)
-                    }
+                    val pref = encodings.find { it.first == "SHA256_SHA256_LD" }
+                    if (pref != null) { encodings.remove(pref); encodings.add(0, pref) }
                 }
 
                 for ((l, v) in encodings) debug.appendLine("  $l: ${v.take(50)}")
 
-                // ═══ 11. جرب كل طريقة ═══
+                // ═══ 7. جرب كل طريقة ═══
                 for ((label, encodedPass) in encodings) {
                     debug.appendLine("\n=== Try: $label ===")
                     debug.appendLine("Cookies: ${RetrofitClient.getCookiesString()}")
 
                     try {
-                        val response = api.login(password = encodedPass, ad = ad)
-                        val body = response.body()?.string() ?: ""
+                        val formBody = okhttp3.FormBody.Builder()
+                            .add("isTest", "false")
+                            .add("goformId", "LOGIN")
+                            .add("password", encodedPass)
+                            .add("AD", ad).build()
+
+                        val req = okhttp3.Request.Builder()
+                            .url("$base/goform/goform_set_cmd_process")
+                            .post(formBody)
+                            .header("Referer", "$base/m/index.html")
+                            .header("X-Requested-With", "XMLHttpRequest").build()
+
+                        val resp = client.newCall(req).execute()
+                        val body = resp.body?.string() ?: ""
                         debug.appendLine("Response: $body")
                         debug.appendLine("Cookies after: ${RetrofitClient.getCookiesString()}")
 
                         when {
+                            // ═══ result:0 = نجاح كامل ═══
                             body.contains("\"result\":\"0\"") || body.contains("\"result\":0") -> {
                                 debug.appendLine("✅ SUCCESS with $label!")
+
+                                // تحقق بالACL
+                                val aclReq = okhttp3.Request.Builder()
+                                    .url("$base/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList")
+                                    .header("X-Requested-With", "XMLHttpRequest").build()
+                                val aclBody = client.newCall(aclReq).execute().body?.string() ?: ""
+                                debug.appendLine("ACL: ${aclBody.take(200)}")
+
                                 storage.saveCredentials(routerIp, username, password)
                                 storage.setLoggedIn(true)
                                 loginDebug = debug.toString()
                                 return@withContext Result.success("تم الاتصال ($label)")
                             }
+
+                            // ═══ result:1 = جلسة موجودة = نجاح! ═══
                             body.contains("\"result\":\"1\"") || body.contains("\"result\":1") -> {
-                                debug.appendLine("⚠️ Session exists")
-                                val aclR = api.getGenericCmd(cmd = "queryDeviceAccessControlList")
-                                val aclBody = aclR.body()?.string() ?: ""
+                                debug.appendLine("⚠️ Session exists - testing if usable...")
+
+                                // جرب قراءة ACL مباشرة
+                                val aclReq = okhttp3.Request.Builder()
+                                    .url("$base/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList")
+                                    .header("X-Requested-With", "XMLHttpRequest").build()
+                                val aclBody = client.newCall(aclReq).execute().body?.string() ?: ""
                                 debug.appendLine("ACL: ${aclBody.take(200)}")
-                                if (aclBody.contains("AclMode") || aclBody.contains("BlackMacList") || aclBody.length > 30) {
-                                    debug.appendLine("✅ Session valid!")
+
+                                // جرب قراءة loginfo
+                                val logReq = okhttp3.Request.Builder()
+                                    .url("$base/goform/goform_get_cmd_process?cmd=loginfo")
+                                    .header("X-Requested-With", "XMLHttpRequest").build()
+                                val logBody = client.newCall(logReq).execute().body?.string() ?: ""
+                                debug.appendLine("loginfo: $logBody")
+
+                                // جرب أمر بسيط
+                                val langReq = okhttp3.Request.Builder()
+                                    .url("$base/goform/goform_get_cmd_process?cmd=Language")
+                                    .header("X-Requested-With", "XMLHttpRequest").build()
+                                val langBody = client.newCall(langReq).execute().body?.string() ?: ""
+                                debug.appendLine("Language: $langBody")
+
+                                // إذا اللغة ترجع بيانات = نجاح
+                                if (langBody.contains("Language") && langBody.length > 20) {
+                                    debug.appendLine("✅ Session is usable!")
                                     storage.saveCredentials(routerIp, username, password)
                                     storage.setLoggedIn(true)
                                     loginDebug = debug.toString()
                                     return@withContext Result.success("تم الاتصال ($label)")
                                 }
+
+                                // جرب احذف الجلسة القديمة وأعد المحاولة
+                                debug.appendLine("\n--- Force kill old session ---")
+                                try {
+                                    val logoutForm = okhttp3.FormBody.Builder()
+                                        .add("isTest", "false")
+                                        .add("goformId", "LOGOUT").build()
+                                    val logoutReq = okhttp3.Request.Builder()
+                                        .url("$base/goform/goform_set_cmd_process")
+                                        .post(logoutForm).build()
+                                    val logoutBody = client.newCall(logoutReq).execute().body?.string() ?: ""
+                                    debug.appendLine("Logout: $logoutBody")
+                                    Thread.sleep(3000)
+
+                                    // أعد المحاولة بعد Logout
+                                    val retryForm = okhttp3.FormBody.Builder()
+                                        .add("isTest", "false")
+                                        .add("goformId", "LOGIN")
+                                        .add("password", encodedPass)
+                                        .add("AD", ad).build()
+                                    val retryReq = okhttp3.Request.Builder()
+                                        .url("$base/goform/goform_set_cmd_process")
+                                        .post(retryForm)
+                                        .header("Referer", "$base/m/index.html").build()
+                                    val retryBody = client.newCall(retryReq).execute().body?.string() ?: ""
+                                    debug.appendLine("Retry: $retryBody")
+                                    debug.appendLine("Cookies: ${RetrofitClient.getCookiesString()}")
+
+                                    if (retryBody.contains("\"result\":\"0\"") || retryBody.contains("\"result\":0")) {
+                                        debug.appendLine("✅ SUCCESS after logout!")
+                                        storage.saveCredentials(routerIp, username, password)
+                                        storage.setLoggedIn(true)
+                                        loginDebug = debug.toString()
+                                        return@withContext Result.success("تم الاتصال ($label)")
+                                    }
+                                } catch (e: Exception) { debug.appendLine("Force kill error: ${e.message}") }
                             }
+
                             body.contains("\"result\":\"3\"") || body.contains("\"result\":3") -> {
                                 debug.appendLine("❌ Wrong password")
                             }
                             else -> debug.appendLine("❓ Unknown: ${body.take(100)}")
                         }
-                    } catch (e: Exception) {
-                        debug.appendLine("$label error: ${e.message}")
-                    }
+                    } catch (e: Exception) { debug.appendLine("$label error: ${e.message}") }
                 }
 
                 debug.appendLine("\n=== ALL FAILED ===")
+                debug.appendLine("\n*** جرّب: أطفئ الراوتر 10 ثواني ثم شغّله ***")
                 loginDebug = debug.toString()
-                Result.failure(Exception("فشل الدخول - أرسل لي Debug"))
+                Result.failure(Exception("فشل الدخول"))
             }
-        } catch (e: Exception) {
-            Result.failure(Exception("خطأ: ${e.message}"))
-        }
+        } catch (e: Exception) { Result.failure(Exception("خطأ: ${e.message}")) }
     }
-                
-
-    // ═══════════════════════════════════════════
-    // التحقق من الجلسة
-    // ═══════════════════════════════════════════
-
-    private fun verifySession(client: okhttp3.OkHttpClient, base: String, debug: StringBuilder): String {
-        return try {
-            val req = okhttp3.Request.Builder()
-                .url("$base/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList")
-                .header("X-Requested-With", "XMLHttpRequest")
-                .header("Referer", "$base/index.html").build()
-            val body = client.newCall(req).execute().body?.string() ?: ""
-            debug.appendLine("ACL verify: ${body.take(200)}")
-            body
-        } catch (e: Exception) {
-            debug.appendLine("ACL verify error: ${e.message}")
-            ""
-        }
-    }
-
     // ═══════════════════════════════════════════
     // التأكد من تسجيل الدخول
     // ═══════════════════════════════════════════
