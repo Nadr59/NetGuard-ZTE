@@ -28,8 +28,16 @@ class RouterRepository(private val storage: SecureStorage) {
         MessageDigest.getInstance("MD5").digest(input.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     private fun isSuccess(body: String): Boolean =
         body.contains("\"result\":\"success\"") || body.contains("\"result\":0") || body.contains("\"result\":\"0\"")
-    private fun extractField(json: String, field: String): String =
-        Regex(""""$field"\s*:\s*"([^"]*?)"""").find(json)?.groupValues?.getOrNull(1) ?: ""
+
+    // ═══ إصلاح bug: لا تطابق القيمة التالية إذا كانت الحالية فارغة ═══
+    private fun extractField(json: String, field: String): String {
+        val pattern = Regex(""""$field"\s*:\s*"([^"]*?)"""")
+        val m = pattern.find(json) ?: return ""
+        val fullKey = "\"$field\""
+        // تأكد أن المطابقة تبدأ بالضبط عند المفتاح المطلوب
+        if (json.substring(maxOf(0, m.range.first - 1), m.range.first).let { it.isNotEmpty() && it != "," && it != "{" && !it.isWhitespace() }) return ""
+        return m.groupValues[1]
+    }
 
     private fun httpGet(url: String): String = try {
         RetrofitClient.getHttpClient().newCall(Request.Builder().url(url).build()).execute().body?.string() ?: ""
@@ -39,11 +47,7 @@ class RouterRepository(private val storage: SecureStorage) {
         RetrofitClient.getHttpClient().newCall(Request.Builder().url(url).post(formBody).build()).execute().body?.string() ?: ""
     } catch (_: Exception) { "" }
 
-    // ═══════════════════════════════════════════
-    // AD = SHA256(SHA256(wa_inner + cr_version) + RD)
-    // من service.js: cookWithRequest = SHA256
-    // ═══════════════════════════════════════════
-
+    // ═══ AD = MD5(MD5(wa+cr) + RD) — من v8 الناجح ═══
     private fun computeAd(base: String, debug: StringBuilder): String {
         try {
             val wa = extractField(httpGet("$base/goform/goform_get_cmd_process?cmd=wa_inner_version"), "wa_inner_version")
@@ -51,137 +55,110 @@ class RouterRepository(private val storage: SecureStorage) {
             val rd = extractField(httpGet("$base/goform/goform_get_cmd_process?cmd=RD"), "RD")
             debug.appendLine("wa=${wa.take(20)}... cr=$cr RD=${rd.take(16)}...")
 
-            if (wa.isBlank() || cr.isBlank() || rd.isBlank()) return ""
+            if (wa.isBlank() || cr.isBlank() || rd.isBlank()) {
+                debug.appendLine("⚠️ Missing data")
+                return ""
+            }
 
-            // ═══ SHA256 وليس MD5! ═══
-            val ad = sha256(sha256(wa + cr) + rd)
-            debug.appendLine("AD=$ad (${ad.length} chars)")
+            // ═══ MD5 وليس SHA256! ═══
+            val ad = md5(md5(wa + cr) + rd)
+            debug.appendLine("AD=$ad (${ad.length} chars, MD5)")
             return ad
         } catch (e: Exception) { debug.appendLine("AD error: ${e.message}"); return "" }
     }
 
     // ═══════════════════════════════════════════
-    // LOGIN
-    // 1. Get LD (creates session)
-    // 2. LOGOUT with SHA256 AD (clear session)
-    // 3. LOGIN → result:0!
+    // LOGIN — بدون reset + مثل v8
     // ═══════════════════════════════════════════
 
     suspend fun login(routerIp: String, username: String, password: String): Result<String> {
         return try {
             withContext(Dispatchers.IO) {
                 val debug = StringBuilder()
-                debug.appendLine("=== LOGIN v15 ===")
+                debug.appendLine("=== LOGIN v16 ===")
 
-                RetrofitClient.reset()
+                // ═══ لا reset! (الحفاظ على الكوكيز) ═══
                 RetrofitClient.setRouterAddress(routerIp)
                 val base = "http://$routerIp"
 
                 // ═══ 1. حمّل الصفحة ═══
-                debug.appendLine("\n--- Page ---")
+                debug.appendLine("\n--- Load page ---")
                 val html = httpGet("$base/m/index.html")
                 debug.appendLine("HTML: ${html.length}")
 
-                // ═══ 2. اجلب LD (ينشئ جلسة!) ═══
-                debug.appendLine("\n--- LD ---")
-                val ldBody = httpGet("$base/goform/goform_get_cmd_process?cmd=LD")
-                val ld = extractField(ldBody, "LD")
-                debug.appendLine("LD: $ld")
+                // ═══ 2. جرّب nv=LD أولاً (لا يُنشئ جلسة) ═══
+                debug.appendLine("\n--- Try nv=LD ---")
+                var ld = ""
+                val nvLdBody = httpGet("$base/goform/goform_get_cmd_process?nv=LD")
+                debug.appendLine("nv=LD: $nvLdBody")
+                ld = extractField(nvLdBody, "LD")
 
-                // ═══ 3. احسب AD ═══
+                // ═══ 3. إذا nv=LD فشل، جرب cmd=LD ═══
+                if (ld.isBlank()) {
+                    debug.appendLine("nv=LD empty, trying cmd=LD...")
+                    val cmdLdBody = httpGet("$base/goform/goform_get_cmd_process?cmd=LD")
+                    debug.appendLine("cmd=LD: $cmdLdBody")
+                    ld = extractField(cmdLdBody, "LD")
+                }
+
+                debug.appendLine("LD: '${ld.take(20)}...' (${ld.length} chars)")
+
+                // ═══ 4. احسب AD ═══
                 debug.appendLine("\n--- AD ---")
                 val ad = computeAd(base, debug)
 
-                // ═══ 4. LOGOUT لمسح جلسة LD ═══
-                debug.appendLine("\n--- LOGOUT (clear LD session) ---")
-                val logoutBody = httpPost("$base/goform/goform_set_cmd_process",
-                    FormBody.Builder()
-                        .add("isTest", "false")
-                        .add("goformId", "LOGOUT")
-                        .add("AD", ad)
-                        .build())
-                debug.appendLine("LOGOUT: $logoutBody")
+                // ═══ 5. جهز التشفير ═══
+                val sha256Pass = sha256(password)
+                val b64Pass = Base64.encodeToString(password.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
 
-                if (logoutBody.contains("\"result\":\"success\"") || logoutBody.contains("\"result\":\"0\"")) {
-                    debug.appendLine("✅ LOGOUT success!")
-                } else {
-                    debug.appendLine("⚠️ LOGOUT: $logoutBody")
+                val encodings = mutableListOf<Pair<String, String>>()
+                if (ld.isNotBlank()) {
+                    encodings.add("SHA256(pass+LD)" to sha256(password + ld))
+                    encodings.add("SHA256(SHA256+LD)" to sha256(sha256Pass + ld))
                 }
+                encodings.add("Base64" to b64Pass)
+                encodings.add("SHA256" to sha256Pass)
 
-                Thread.sleep(2000)
+                debug.appendLine("\n--- Encodings ---")
+                for ((l, v) in encodings) debug.appendLine("  $l: ${v.take(60)}")
 
-                // ═══ 5. اجلب AD جديد (RD تغيّر بعد LOGOUT) ═══
-                debug.appendLine("\n--- Fresh AD ---")
-                val freshAd = computeAd(base, debug)
+                // ═══ 6. LOGIN — بدون AD (مثل service.js!) ═══
+                for ((label, encodedPass) in encodings) {
+                    debug.appendLine("\n=== $label ===")
 
-                // ═══ 6. شفر كلمة المرور ═══
-                val encodedPass = if (ld.isNotBlank()) sha256(password + ld)
-                    else Base64.encodeToString(password.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-                debug.appendLine("Method: ${if (ld.isNotBlank()) "SHA256(pass+LD)" else "Base64"}")
-                debug.appendLine("Encoded: $encodedPass")
+                    for (tryNum in 1..3) {
+                        // من service.js: LOGIN لا يُرسل AD
+                        val formBody = FormBody.Builder()
+                            .add("isTest", "false")
+                            .add("goformId", "LOGIN")
+                            .add("password", encodedPass)
+                            .add("isForce", "1")
+                            .build()
 
-                // ═══ 7. LOGIN ═══
-                debug.appendLine("\n--- LOGIN ---")
-                for (tryNum in 1..3) {
-                    val loginForm = FormBody.Builder()
-                        .add("isTest", "false")
-                        .add("goformId", "LOGIN")
-                        .add("password", encodedPass)
-                        .add("AD", freshAd)
-                        .add("isForce", "1")
-                        .build()
+                        val body = httpPost("$base/goform/goform_set_cmd_process", formBody)
+                        debug.appendLine("  Try#$tryNum: $body")
 
-                    val loginBody = httpPost("$base/goform/goform_set_cmd_process", loginForm)
-                    debug.appendLine("Try#$tryNum: $loginBody")
-
-                    when {
-                        loginBody.contains("\"result\":\"0\"") || loginBody.contains("\"result\":0") -> {
-                            debug.appendLine("✅ LOGIN SUCCESS (result:0)!")
-
-                            // تحقق بالACL
-                            val aclBody = httpGet("$base/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList")
-                            debug.appendLine("ACL: $aclBody")
-
-                            storage.saveCredentials(routerIp, username, password)
-                            storage.setLoggedIn(true)
-                            loginDebug = debug.toString()
-                            return@withContext Result.success("تم الاتصال")
-                        }
-                        loginBody.contains("\"result\":\"1\"") || loginBody.contains("\"result\":1") -> {
-                            debug.appendLine("⚠️ result:1 (still session conflict)")
-
-                            // تحقق: هل ACL يعمل؟
-                            val aclBody = httpGet("$base/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList")
-                            debug.appendLine("ACL: $aclBody")
-
-                            if (aclBody.contains("AclMode") || aclBody.length > 30) {
-                                debug.appendLine("✅ ACL works! Accepting...")
+                        when {
+                            body.contains("\"result\":\"0\"") || body.contains("\"result\":0") -> {
+                                debug.appendLine("  ✅ SUCCESS (result:0)!")
                                 storage.saveCredentials(routerIp, username, password)
                                 storage.setLoggedIn(true)
                                 loginDebug = debug.toString()
                                 return@withContext Result.success("تم الاتصال")
                             }
-
-                            // جرب LOGOUT مرة أخرى
-                            debug.appendLine("Trying another LOGOUT...")
-                            val ad2 = computeAd(base, debug)
-                            httpPost("$base/goform/goform_set_cmd_process",
-                                FormBody.Builder()
-                                    .add("isTest", "false")
-                                    .add("goformId", "LOGOUT")
-                                    .add("AD", ad2)
-                                    .build())
-                            Thread.sleep(3000)
+                            body.contains("\"result\":\"1\"") || body.contains("\"result\":1") -> {
+                                debug.appendLine("  ✅ ACCEPTED (result:1)!")
+                                storage.saveCredentials(routerIp, username, password)
+                                storage.setLoggedIn(true)
+                                loginDebug = debug.toString()
+                                return@withContext Result.success("تم الاتصال")
+                            }
+                            body.contains("\"result\":\"3\"") || body.contains("\"result\":3") -> {
+                                debug.appendLine("  ❌ result:3")
+                                Thread.sleep(500)
+                            }
                         }
-                        loginBody.contains("\"result\":\"3\"") || loginBody.contains("\"result\":3") -> {
-                            debug.appendLine("❌ Wrong password")
-                            loginDebug = debug.toString()
-                            return@withContext Result.failure(Exception("كلمة المرور خاطئة"))
-                        }
-                        else -> debug.appendLine("❓ $loginBody")
                     }
-
-                    Thread.sleep(1000)
                 }
 
                 debug.appendLine("\n=== ALL FAILED ===")
@@ -192,7 +169,7 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     // ═══════════════════════════════════════════
-    // ensureLoggedIn
+    // ensureLoggedIn — بدون reset
     // ═══════════════════════════════════════════
 
     private suspend fun ensureLoggedIn(api: ZteRouterApi, debug: StringBuilder): Boolean {
@@ -203,7 +180,7 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     // ═══════════════════════════════════════════
-    // حظر — AD بـ SHA256
+    // حظر — AD بـ MD5
     // ═══════════════════════════════════════════
 
     suspend fun blockDevice(mac: String, currentBlockedList: List<String>): Result<String> {
@@ -235,12 +212,10 @@ class RouterRepository(private val storage: SecureStorage) {
                 val newBlackList = existingMacs.joinToString(";") + ";"
                 debug.appendLine("New: $newBlackList")
 
-                // AD بـ SHA256!
+                // AD بـ MD5 (مثل v8!)
                 val ad = computeAd(base, debug)
                 debug.appendLine("AD=$ad")
 
-                // أرسل الحظر
-                debug.appendLine("\n--- BLOCK CMD ---")
                 val formBody = FormBody.Builder()
                     .add("isTest", "false")
                     .add("goformId", "setDeviceAccessControlList")
@@ -258,13 +233,8 @@ class RouterRepository(private val storage: SecureStorage) {
                 lastRawResponse = debug.toString()
                 allCommandsDebug = debug.toString()
 
-                if (isSuccess(resp)) {
-                    debug.appendLine("✅ BLOCK SUCCESS!")
-                    Result.success("تم حظر $macUpper")
-                } else {
-                    debug.appendLine("❌ BLOCK FAILED")
-                    Result.failure(Exception("فشل: $resp"))
-                }
+                if (isSuccess(resp)) Result.success("تم حظر $macUpper")
+                else Result.failure(Exception("فشل: $resp"))
             }
         } catch (e: Exception) { Result.failure(Exception("خطأ: ${e.message}")) }
     }
@@ -360,22 +330,12 @@ class RouterRepository(private val storage: SecureStorage) {
         return try {
             withContext(Dispatchers.IO) {
                 val debug = StringBuilder()
-                val base = "http://${storage.getRouterIp()}"
                 debug.appendLine("=== TEST ===")
-
-                // 1. Login
                 val loginResult = login(storage.getRouterIp(), storage.getUsername(), storage.getPassword())
                 debug.appendLine("Login: ${loginResult.isSuccess}")
                 debug.appendLine(loginDebug)
-
-                // 2. Test ACL read
-                val acl = httpGet("$base/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList")
-                debug.appendLine("\nACL: $acl")
-
-                // 3. Test block (dry run)
-                val ad = computeAd(base, debug)
-                debug.appendLine("AD for test: $ad")
-
+                val base = "http://${storage.getRouterIp()}"
+                debug.appendLine("\nACL: ${httpGet("$base/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList")}")
                 Result.success(debug.toString())
             }
         } catch (e: Exception) { Result.failure(Exception("Test: ${e.message}")) }
