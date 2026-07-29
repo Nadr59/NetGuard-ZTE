@@ -4,7 +4,6 @@ import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
-import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
@@ -14,11 +13,8 @@ object RetrofitClient {
     private var currentBaseUrl: String = "http://192.168.0.1/"
     private var retrofit: Retrofit? = null
     private var api: ZteRouterApi? = null
-
-    private val cookieStore = mutableMapOf<String, String>()
-
-    // ═══ OkHttp مشترك لكل العمليات ═══
     private var httpClient: OkHttpClient? = null
+    private val cookieStore = mutableMapOf<String, String>()
 
     fun setRouterAddress(ip: String) {
         currentBaseUrl = "http://$ip/"
@@ -31,19 +27,14 @@ object RetrofitClient {
         cookieStore[name] = value
     }
 
-    fun getSessionCookie(): String? = cookieStore["zsid"]
+    fun getCookiesString(): String =
+        cookieStore.entries.joinToString("; ") { "${it.key}=${it.value}" }
 
-    fun getCookiesString(): String {
-        return cookieStore.entries.joinToString("; ") { "${it.key}=${it.value}" }
-    }
-
-    // ═══ الوصول لـ OkHttp client مباشرة ═══
     fun getHttpClient(): OkHttpClient {
         if (httpClient == null) {
             httpClient = OkHttpClient.Builder()
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(15, TimeUnit.SECONDS)
-                .writeTimeout(15, TimeUnit.SECONDS)
                 .cookieJar(object : CookieJar {
                     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
                         for (c in cookies) {
@@ -62,16 +53,31 @@ object RetrofitClient {
                     }
                 })
                 .addInterceptor { chain ->
-                    val request = chain.request().newBuilder()
+                    val original = chain.request()
+                    val builder = original.newBuilder()
+
+                    // ═══ أرسل الكوكيز ═══
                     val cookieHeader = getCookiesString()
                     if (cookieHeader.isNotBlank()) {
-                        request.addHeader("Cookie", cookieHeader)
+                        builder.addHeader("Cookie", cookieHeader)
                     }
-                    request.addHeader("Referer", currentBaseUrl + "m/index.html")
-                    request.addHeader("Accept", "application/json, text/javascript, */*; q=0.01")
-                    request.addHeader("X-Requested-With", "XMLHttpRequest")
-                    request.addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36")
-                    chain.proceed(request.build())
+
+                    // ═══ أضف headers حسب نوع الطلب ═══
+                    val url = original.url.toString()
+                    if (url.contains("/goform/")) {
+                        // API request = مثل المتصفح مع AJAX
+                        builder.addHeader("X-Requested-With", "XMLHttpRequest")
+                        builder.addHeader("Accept", "application/json, text/javascript, */*; q=0.01")
+                        builder.addHeader("Referer", currentBaseUrl + "m/index.html")
+                    } else {
+                        // Page request = مثل المتصفح عادي (بدون XHR!)
+                        builder.addHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                    }
+
+                    builder.addHeader("User-Agent",
+                        "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36")
+
+                    chain.proceed(builder.build())
                 }
                 .build()
         }
