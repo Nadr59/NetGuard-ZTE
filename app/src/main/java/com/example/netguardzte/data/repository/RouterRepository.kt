@@ -86,7 +86,7 @@ class RouterRepository(private val storage: SecureStorage) {
         }
     }
 
-    suspend fun login(
+        suspend fun login(
         routerIp: String,
         username: String,
         password: String
@@ -94,94 +94,155 @@ class RouterRepository(private val storage: SecureStorage) {
         return try {
             withContext(Dispatchers.IO) {
                 val debug = StringBuilder()
-                debug.appendLine("=== LOGIN ===")
+                debug.appendLine("=== LOGIN v17 ===")
 
                 RetrofitClient.setRouterAddress(routerIp)
                 val base = "http://$routerIp"
 
+                // 1. Load page
                 debug.appendLine("\n--- Page ---")
-                val html = httpGet("$base/m/index.html")
-                debug.appendLine("HTML: ${html.length}")
+                httpGet("$base/m/index.html")
+                debug.appendLine("Loaded")
 
+                // 2. Get LD (creates anonymous session!)
                 debug.appendLine("\n--- LD ---")
                 val ldBody = httpGet("$base/goform/goform_get_cmd_process?cmd=LD")
-                debug.appendLine("LD response: $ldBody")
                 val ld = extractField(ldBody, "LD")
-                debug.appendLine("LD value: '$ld'")
+                debug.appendLine("LD: '${ld.take(20)}...'")
 
+                // 3. Compute AD for LOGOUT
                 debug.appendLine("\n--- AD ---")
                 val ad = computeAd(base, debug)
 
-                debug.appendLine("\n--- Encodings ---")
-                val encodings = mutableListOf<Pair<String, String>>()
-
-                if (ld.isNotBlank()) {
-                    encodings.add("SHA256(pass+LD)" to sha256(password + ld))
-                    encodings.add("SHA256(SHA256+LD)" to sha256(sha256(password) + ld))
-                }
-
-                val b64 = Base64.encodeToString(
-                    password.toByteArray(Charsets.UTF_8),
-                    Base64.NO_WRAP
+                // 4. LOGOUT immediately to kill anonymous session!
+                debug.appendLine("\n--- LOGOUT (kill LD session) ---")
+                val logoutBody = httpPost(
+                    "$base/goform/goform_set_cmd_process",
+                    FormBody.Builder()
+                        .add("isTest", "false")
+                        .add("goformId", "LOGOUT")
+                        .add("AD", ad)
+                        .build()
                 )
-                encodings.add("Base64" to b64)
-                encodings.add("SHA256" to sha256(password))
+                debug.appendLine("LOGOUT: $logoutBody")
+                Thread.sleep(2000)
 
+                // 5. Prepare encodings
+                val encodings = mutableListOf<Pair<String, String>>()
+                if (ld.isNotBlank()) {
+                    encodings.add(
+                        "SHA256(pass+LD)" to sha256(password + ld)
+                    )
+                    encodings.add(
+                        "SHA256(SHA256+LD)" to sha256(sha256(password) + ld)
+                    )
+                }
+                encodings.add(
+                    "Base64" to Base64.encodeToString(
+                        password.toByteArray(Charsets.UTF_8),
+                        Base64.NO_WRAP
+                    )
+                )
+
+                debug.appendLine("\n--- Encodings ---")
                 for ((l, v) in encodings) {
                     debug.appendLine("  $l: ${v.take(60)}")
                 }
 
+                // 6. LOGIN attempts (1 try each, then fresh LD)
                 for ((label, encodedPass) in encodings) {
                     debug.appendLine("\n=== $label ===")
 
-                    for (tryNum in 1..3) {
-                        val formBody = FormBody.Builder()
-                            .add("isTest", "false")
-                            .add("goformId", "LOGIN")
-                            .add("password", encodedPass)
-                            .add("isForce", "1")
-                            .build()
+                    // Try with existing LD
+                    val formBody = FormBody.Builder()
+                        .add("isTest", "false")
+                        .add("goformId", "LOGIN")
+                        .add("password", encodedPass)
+                        .add("isForce", "1")
+                        .build()
 
-                        val body = httpPost(
-                            "$base/goform/goform_set_cmd_process",
-                            formBody
-                        )
-                        debug.appendLine("  Try#$tryNum: $body")
+                    val body = httpPost(
+                        "$base/goform/goform_set_cmd_process",
+                        formBody
+                    )
+                    debug.appendLine("  Response: $body")
 
-                        when {
-                            body.contains("\"result\":\"0\"") ||
-                                    body.contains("\"result\":0") -> {
-                                debug.appendLine("  SUCCESS!")
-                                storage.saveCredentials(
-                                    routerIp,
-                                    username,
-                                    password
+                    when {
+                        body.contains("\"result\":\"0\"") ||
+                                body.contains("\"result\":0") -> {
+                            debug.appendLine("  SUCCESS!")
+                            storage.saveCredentials(
+                                routerIp, username, password
+                            )
+                            storage.setLoggedIn(true)
+                            loginDebug = debug.toString()
+                            return@withContext Result.success("done")
+                        }
+                        body.contains("\"result\":\"1\"") ||
+                                body.contains("\"result\":1") -> {
+                            // Session conflict! Fresh LD + retry
+                            debug.appendLine(
+                                "  Session conflict, fresh LD..."
+                            )
+
+                            // Get fresh LD
+                            val ld2Body = httpGet(
+                                "$base/goform/goform_get_cmd_process?cmd=LD"
+                            )
+                            val ld2 = extractField(ld2Body, "LD")
+                            debug.appendLine("  New LD: ${ld2.take(20)}")
+
+                            // LOGOUT with fresh AD
+                            val ad2 = computeAd(base, debug)
+                            httpPost(
+                                "$base/goform/goform_set_cmd_process",
+                                FormBody.Builder()
+                                    .add("isTest", "false")
+                                    .add("goformId", "LOGOUT")
+                                    .add("AD", ad2)
+                                    .build()
+                            )
+                            Thread.sleep(2000)
+
+                            // LOGIN with fresh LD
+                            if (ld2.isNotBlank()) {
+                                val freshPass = when (label) {
+                                    "SHA256(pass+LD)" ->
+                                        sha256(password + ld2)
+                                    "SHA256(SHA256+LD)" ->
+                                        sha256(sha256(password) + ld2)
+                                    else -> encodedPass
+                                }
+
+                                val retryBody = httpPost(
+                                    "$base/goform/goform_set_cmd_process",
+                                    FormBody.Builder()
+                                        .add("isTest", "false")
+                                        .add("goformId", "LOGIN")
+                                        .add("password", freshPass)
+                                        .add("isForce", "1")
+                                        .build()
                                 )
-                                storage.setLoggedIn(true)
-                                loginDebug = debug.toString()
-                                return@withContext Result.success(
-                                    "done"
-                                )
+                                debug.appendLine("  Retry: $retryBody")
+
+                                if (retryBody.contains("\"result\":\"0\"") ||
+                                    retryBody.contains("\"result\":0") ||
+                                    retryBody.contains("\"result\":\"1\"") ||
+                                    retryBody.contains("\"result\":1")
+                                ) {
+                                    debug.appendLine("  ACCEPTED!")
+                                    storage.saveCredentials(
+                                        routerIp, username, password
+                                    )
+                                    storage.setLoggedIn(true)
+                                    loginDebug = debug.toString()
+                                    return@withContext Result.success("done")
+                                }
                             }
-                            body.contains("\"result\":\"1\"") ||
-                                    body.contains("\"result\":1") -> {
-                                debug.appendLine("  ACCEPTED!")
-                                storage.saveCredentials(
-                                    routerIp,
-                                    username,
-                                    password
-                                )
-                                storage.setLoggedIn(true)
-                                loginDebug = debug.toString()
-                                return@withContext Result.success(
-                                    "done"
-                                )
-                            }
-                            body.contains("\"result\":\"3\"") ||
-                                    body.contains("\"result\":3") -> {
-                                debug.appendLine("  Wrong password")
-                                Thread.sleep(500)
-                            }
+                        }
+                        body.contains("\"result\":\"3\"") ||
+                                body.contains("\"result\":3") -> {
+                            debug.appendLine("  Wrong password")
                         }
                     }
                 }
@@ -194,6 +255,9 @@ class RouterRepository(private val storage: SecureStorage) {
             Result.failure(Exception("error: ${e.message}"))
         }
     }
+    
+                                
+                    
 
     private suspend fun ensureLoggedIn(
         api: ZteRouterApi,
