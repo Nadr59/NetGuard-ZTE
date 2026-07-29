@@ -331,11 +331,11 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
         } catch (_: Exception) {}
     }
      // في ViewModel:
+
 suspend fun diagnose(): String {
     val result = repository.testRouterConnection()
     return result.getOrNull() ?: "No result"
 }
-
 // أو في UI: اجعل زر "اختبار" يستدعي diagnosePost()
     private fun saveError(text: String) {
         try {
