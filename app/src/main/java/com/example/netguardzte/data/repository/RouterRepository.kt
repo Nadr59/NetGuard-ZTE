@@ -310,16 +310,18 @@ class RouterRepository(private val storage: SecureStorage) {
     // حظر جهاز
     // ═══════════════════════════════════════════════════════════════
 
-        suspend fun blockDevice(mac: String, currentBlockedList: List<String>): Result<String> {
+            suspend fun blockDevice(mac: String, currentBlockedList: List<String>): Result<String> {
         return try {
             withContext(Dispatchers.IO) {
                 val api = RetrofitClient.getApi()
+                val client = RetrofitClient.getHttpClient()
                 val debug = StringBuilder()
                 val macUpper = mac.uppercase().trim()
+                val base = "http://${storage.getRouterIp()}"
 
                 debug.appendLine("=== BLOCK $macUpper ===")
 
-                // أعد تسجيل الدخول
+                // أعد الدخول
                 val loggedIn = ensureLoggedIn(api, debug)
                 if (!loggedIn) {
                     lastRawResponse = debug.toString()
@@ -329,8 +331,8 @@ class RouterRepository(private val storage: SecureStorage) {
 
                 // اقرأ القائمة الحالية
                 val currentAcl = readCurrentACL(api, debug)
-                val currentBlackListRaw = currentAcl["BlackMacList"] ?: ""
-                val existingMacs = currentBlackListRaw.split(";")
+                val existingMacs = (currentAcl["BlackMacList"] ?: "")
+                    .split(";")
                     .map { it.trim().uppercase() }
                     .filter { it.isNotEmpty() && it.matches(Regex("([0-9A-F]{2}:){5}[0-9A-F]{2}")) }
                     .toMutableList()
@@ -339,164 +341,79 @@ class RouterRepository(private val storage: SecureStorage) {
                 val newBlackList = existingMacs.joinToString(";") + ";"
 
                 debug.appendLine("Existing: $existingMacs")
-                debug.appendLine("New list: $newBlackList")
+                debug.appendLine("New: $newBlackList")
 
-                // احسب AD
-                val client = RetrofitClient.getHttpClient()
-                val base = "http://${storage.getRouterIp()}"
+                // احسب AD بـ SHA256
                 val adValue = computeAd(api, debug)
                 debug.appendLine("AD=$adValue")
 
-                // ═══ جرب عدة طرق للحظر ═══
-                data class BlockAttempt(
-                    val label: String,
-                    val goformId: String,
-                    val aclMode: String,
-                    val blackList: String,
-                    val includeAd: Boolean,
-                    val includeWhite: Boolean
-                )
+                // ═══ أرسل أمر الحظر ═══
+                debug.appendLine("\n--- Send block ---")
+                try {
+                    val formBody = okhttp3.FormBody.Builder()
+                        .add("isTest", "false")
+                        .add("goformId", "setDeviceAccessControlList")
+                        .add("AclMode", "2")
+                        .add("BlackMacList", newBlackList)
+                        .add("WhiteMacList", "")
+                        .add("WhiteNameList", "")
+                        .add("BlackNameList", "")
+                        .add("AD", adValue)
+                        .build()
 
-                val attempts = mutableListOf<BlockAttempt>()
+                    val req = okhttp3.Request.Builder()
+                        .url("$base/goform/goform_set_cmd_process")
+                        .post(formBody)
+                        .header("Referer", "$base/m/index.html")
+                        .header("X-Requested-With", "XMLHttpRequest")
+                        .build()
 
-                // الطريقة 1: setDeviceAccessControlList مع AD
-                attempts.add(BlockAttempt(
-                    "ACL+AD", "setDeviceAccessControlList", "2",
-                    newBlackList, true, true
-                ))
+                    val resp = client.newCall(req).execute()
+                    val responseBody = resp.body?.string() ?: ""
+                    debug.appendLine("Response: $responseBody")
 
-                // الطريقة 2: بدون AD
-                attempts.add(BlockAttempt(
-                    "ACL no AD", "setDeviceAccessControlList", "2",
-                    newBlackList, false, true
-                ))
-
-                // الطريقة 3: بدون trailing semicolon
-                attempts.add(BlockAttempt(
-                    "ACL no semicolon+AD", "setDeviceAccessControlList", "2",
-                    existingMacs.joinToString(";"), true, true
-                ))
-
-                // الطريقة 4: MAC واحد فقط بدون ;
-                attempts.add(BlockAttempt(
-                    "ACL single MAC+AD", "setDeviceAccessControlList", "2",
-                    macUpper, true, true
-                ))
-
-                // الطريقة 5: SET_WIFI_MAC_FILTER
-                attempts.add(BlockAttempt(
-                    "MAC_FILTER+AD", "SET_WIFI_MAC_FILTER", "2",
-                    newBlackList, true, false
-                ))
-
-                // الطريقة 6: MAC_FILTER بدون AD
-                attempts.add(BlockAttempt(
-                    "MAC_FILTER no AD", "SET_WIFI_MAC_FILTER", "2",
-                    newBlackList, false, false
-                ))
-
-                // الطريقة 7: lowercase MAC
-                attempts.add(BlockAttempt(
-                    "ACL lowercase+AD", "setDeviceAccessControlList", "2",
-                    mac.lowercase() + ";", true, true
-                ))
-
-                // الطريقة 8: MAC بـ - بدل :
-                val macDash = macUpper.replace(":", "-")
-                attempts.add(BlockAttempt(
-                    "ACL dash MAC+AD", "setDeviceAccessControlList", "2",
-                    macDash + ";", true, true
-                ))
-
-                // الطريقة 9: AclMode=1 (whitelist mode عكسية)
-                attempts.add(BlockAttempt(
-                    "ACL mode 1+AD", "setDeviceAccessControlList", "1",
-                    "", true, true
-                ))
-
-                for (attempt in attempts) {
-                    debug.appendLine("\n=== ${attempt.label} ===")
-
-                    try {
-                        val formBuilder = okhttp3.FormBody.Builder()
-                            .add("isTest", "false")
-                            .add("goformId", attempt.goformId)
-
-                        if (attempt.goformId == "setDeviceAccessControlList") {
-                            formBuilder.add("AclMode", attempt.aclMode)
-                            formBuilder.add("BlackMacList", attempt.blackList)
-                            if (attempt.includeWhite) {
-                                formBuilder.add("WhiteMacList", "")
-                                formBuilder.add("WhiteNameList", "")
-                                formBuilder.add("BlackNameList", "")
-                            }
-                        } else {
-                            // SET_WIFI_MAC_FILTER
-                            formBuilder.add("mac_filter_enabled", "1")
-                            formBuilder.add("mac_filter_mode", attempt.aclMode)
-                            formBuilder.add("mac_filter_list", attempt.blackList)
-                        }
-
-                        if (attempt.includeAd && adValue.isNotBlank()) {
-                            formBuilder.add("AD", adValue)
-                        }
-
-                        val req = okhttp3.Request.Builder()
-                            .url("$base/goform/goform_set_cmd_process")
-                            .post(formBuilder.build())
-                            .header("Referer", "$base/m/index.html")
-                            .header("X-Requested-With", "XMLHttpRequest")
-                            .build()
-
-                        val resp = client.newCall(req).execute()
-                        val responseBody = resp.body?.string() ?: ""
-                        debug.appendLine("Response: $responseBody")
-
-                        if (isSuccess(responseBody)) {
-                            debug.appendLine("✅ BLOCK SUCCESS with ${attempt.label}!")
-                            lastRawResponse = debug.toString()
-                            allCommandsDebug = debug.toString()
-                            return@withContext Result.success("تم حظر $macUpper")
-                        }
-
-                        if (responseBody.contains("\"result\":\"failure\"")) {
-                            debug.appendLine("❌ failure")
-                        } else if (responseBody.contains("\"result\":\"3\"")) {
-                            debug.appendLine("❌ auth error")
-                        } else {
-                            debug.appendLine("❓ ${responseBody.take(100)}")
-                        }
-                    } catch (e: Exception) {
-                        debug.appendLine("Error: ${e.message}")
+                    if (isSuccess(responseBody)) {
+                        debug.appendLine("✅ BLOCK SUCCESS!")
+                        lastRawResponse = debug.toString()
+                        allCommandsDebug = debug.toString()
+                        return@withContext Result.success("تم حظر $macUpper")
                     }
-                }
 
-                debug.appendLine("\n=== ALL BLOCK METHODS FAILED ===")
-                lastRawResponse = debug.toString()
-                allCommandsDebug = debug.toString()
-                return@withContext Result.failure(Exception("فشل الحظر بكل الطرق"))
+                    debug.appendLine("❌ BLOCK FAILED")
+                    lastRawResponse = debug.toString()
+                    allCommandsDebug = debug.toString()
+                    return@withContext Result.failure(Exception("فشل: $responseBody"))
+                } catch (e: Exception) {
+                    debug.appendLine("Error: ${e.message}")
+                    lastRawResponse = debug.toString()
+                    allCommandsDebug = debug.toString()
+                    return@withContext Result.failure(Exception("خطأ: ${e.message}"))
+                }
             }
         } catch (e: Exception) { Result.failure(Exception("خطأ: ${e.message}")) }
     }
+
+            
             
     // ═══════════════════════════════════════════
     // إلغاء حظر
     // ═══════════════════════════════════════════
 
-    suspend fun unblockDevice(mac: String, currentBlockedList: List<String>): Result<String> {
+        suspend fun unblockDevice(mac: String, currentBlockedList: List<String>): Result<String> {
         return try {
             withContext(Dispatchers.IO) {
                 val api = RetrofitClient.getApi()
+                val client = RetrofitClient.getHttpClient()
                 val debug = StringBuilder()
                 val macUpper = mac.uppercase().trim()
+                val base = "http://${storage.getRouterIp()}"
 
                 debug.appendLine("=== UNBLOCK $macUpper ===")
                 ensureLoggedIn(api, debug)
 
                 val currentAcl = readCurrentACL(api, debug)
-                val currentBlackListRaw = currentAcl["BlackMacList"] ?: ""
-
-                val existingMacs = currentBlackListRaw.split(";")
+                val existingMacs = (currentAcl["BlackMacList"] ?: "")
+                    .split(";")
                     .map { it.trim().uppercase() }
                     .filter { it.isNotEmpty() && it.matches(Regex("([0-9A-F]{2}:){5}[0-9A-F]{2}")) }
                     .toMutableList()
@@ -507,28 +424,37 @@ class RouterRepository(private val storage: SecureStorage) {
 
                 val adValue = computeAd(api, debug)
 
-                val body = buildString {
-                    append("isTest=false")
-                    append("&goformId=setDeviceAccessControlList")
-                    append("&AclMode=$newAclMode")
-                    append("&BlackMacList=${encodeParam(newBlackList)}")
-                    append("&WhiteMacList=")
-                    append("&WhiteNameList=")
-                    append("&BlackNameList=")
-                    if (adValue.isNotBlank()) append("&AD=${encodeParam(adValue)}")
-                }
+                try {
+                    val formBody = okhttp3.FormBody.Builder()
+                        .add("isTest", "false")
+                        .add("goformId", "setDeviceAccessControlList")
+                        .add("AclMode", newAclMode)
+                        .add("BlackMacList", newBlackList)
+                        .add("WhiteMacList", "")
+                        .add("WhiteNameList", "")
+                        .add("BlackNameList", "")
+                        .add("AD", adValue)
+                        .build()
 
-                val r = api.postRaw(body.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
-                val responseBody = r.body()?.string() ?: ""
+                    val req = okhttp3.Request.Builder()
+                        .url("$base/goform/goform_set_cmd_process")
+                        .post(formBody)
+                        .header("Referer", "$base/m/index.html")
+                        .header("X-Requested-With", "XMLHttpRequest")
+                        .build()
 
-                lastRawResponse = debug.toString()
-                allCommandsDebug = debug.toString()
+                    val responseBody = client.newCall(req).execute().body?.string() ?: ""
 
-                if (isSuccess(responseBody)) Result.success("تم إلغاء حظر $macUpper")
-                else Result.failure(Exception("فشل: $responseBody"))
+                    lastRawResponse = debug.toString()
+                    allCommandsDebug = debug.toString()
+
+                    if (isSuccess(responseBody)) Result.success("تم إلغاء حظر $macUpper")
+                    else Result.failure(Exception("فشل: $responseBody"))
+                } catch (e: Exception) { Result.failure(Exception("خطأ: ${e.message}")) }
             }
         } catch (e: Exception) { Result.failure(Exception("خطأ: ${e.message}")) }
     }
+    
 
     // ═══════════════════════════════════════════
     // جلب قائمة المحظورين
@@ -575,26 +501,26 @@ class RouterRepository(private val storage: SecureStorage) {
     // حساب AD
     // ═══════════════════════════════════════════
 
-    private suspend fun computeAd(api: ZteRouterApi, debug: StringBuilder): String {
+        private suspend fun computeAd(api: ZteRouterApi, debug: StringBuilder): String {
         try {
-            val waInner = fetchValue(api, "wa_inner_version", debug)
-            val crVersion = fetchValue(api, "cr_version", debug)
-            val rd = fetchValue(api, "RD", debug)
-            if (waInner.isBlank() || crVersion.isBlank() || rd.isBlank()) return ""
-            val ad = md5(md5(waInner + crVersion) + rd)
-            debug.appendLine("AD=$ad")
+            var waInner = ""; var crVersion = ""; var rd = ""
+            for (name in listOf("wa_inner_version", "cr_version", "RD")) {
+                try {
+                    val r = api.getGenericCmd(cmd = name)
+                    val body = r.body()?.string() ?: ""
+                    val value = Regex(""""$name"\s*:\s*"([^"]*?)"""").find(body)?.groupValues?.getOrNull(1) ?: ""
+                    when (name) { "wa_inner_version" -> waInner = value; "cr_version" -> crVersion = value; "RD" -> rd = value }
+                } catch (_: Exception) {}
+            }
+            if (waInner.isBlank() || crVersion.isBlank() || rd.isBlank()) {
+                debug.appendLine("⚠️ Missing data for AD")
+                return ""
+            }
+            // ═══ SHA256 وليس MD5! (من service.js: cookWithRequest = SHA256) ═══
+            val ad = sha256(sha256(waInner + crVersion) + rd)
+            debug.appendLine("AD=$ad (SHA256 based)")
             return ad
         } catch (e: Exception) { debug.appendLine("AD error: ${e.message}"); return "" }
-    }
-
-    private suspend fun fetchValue(api: ZteRouterApi, name: String, debug: StringBuilder): String {
-        try {
-            val r = api.getGenericCmd(cmd = name)
-            val body = r.body()?.string() ?: ""
-            val value = extractJsonField(body, name)
-            if (value.isNotBlank()) return value
-        } catch (_: Exception) {}
-        return ""
     }
 
     // ═══════════════════════════════════════════
