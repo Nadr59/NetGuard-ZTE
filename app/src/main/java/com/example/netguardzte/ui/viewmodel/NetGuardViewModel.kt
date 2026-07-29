@@ -332,8 +332,8 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
     }
      // في ViewModel:
 suspend fun diagnose(): String {
-    val result = repository.diagnosePost()
-    return result.getOrDefault("No result")
+    val result = repository.testRouterConnection()
+    return result.getOrNull() ?: "No result"
 }
 
 // أو في UI: اجعل زر "اختبار" يستدعي diagnosePost()
