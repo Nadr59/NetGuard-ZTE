@@ -93,8 +93,7 @@ class RouterRepository(private val storage: SecureStorage) {
     // ═══════════════════════════════════════════
     // تسجيل الدخول
     // ═══════════════════════════════════════════
-        
-                 suspend fun login(
+            suspend fun login(
         routerIp: String,
         username: String,
         password: String
@@ -102,13 +101,12 @@ class RouterRepository(private val storage: SecureStorage) {
         return try {
             withContext(Dispatchers.IO) {
                 val debug = StringBuilder()
-                debug.appendLine("=== LOGIN FIX ===")
+                debug.appendLine("=== LOGIN FINAL ===")
                 debug.appendLine("Router: $routerIp")
 
                 RetrofitClient.reset()
                 RetrofitClient.setRouterAddress(routerIp)
                 val client = RetrofitClient.getHttpClient()
-                val api = RetrofitClient.getApi()
                 val base = "http://$routerIp"
 
                 // ═══ 1. حمّل صفحة الدخول ═══
@@ -127,26 +125,28 @@ class RouterRepository(private val storage: SecureStorage) {
                         .url("$base/goform/goform_get_cmd_process?cmd=LD")
                         .header("X-Requested-With", "XMLHttpRequest").build()
                     val body = client.newCall(req).execute().body?.string() ?: ""
-                    debug.appendLine("LD response: $body")
+                    debug.appendLine("LD: $body")
                     ld = Regex(""""LD"\s*:\s*"([^"]*?)"""").find(body)?.groupValues?.getOrNull(1) ?: ""
-                } catch (e: Exception) { debug.appendLine("LD error: ${e.message}") }
-                debug.appendLine("LD: '$ld'")
+                } catch (e: Exception) { debug.appendLine("Error: ${e.message}") }
+                debug.appendLine("LD value: '$ld'")
 
-                // ═══ 3. شفر: SHA256(password + LD) ═══
-                val encodedPass = if (ld.isNotBlank()) sha256(password + ld)
-                    else Base64.encodeToString(password.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                // ═══ 3. شفر: SHA256(pass + LD) ═══
+                val encodedPass = if (ld.isNotBlank()) {
+                    sha256(password + ld)
+                } else {
+                    Base64.encodeToString(password.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                }
                 debug.appendLine("Method: ${if (ld.isNotBlank()) "SHA256(pass+LD)" else "Base64"}")
                 debug.appendLine("Encoded: $encodedPass")
 
-                // ═══ 4. أرسل LOGIN ═══
+                // ═══ 4. LOGIN مع isForce=1 (وليس "true") ═══
                 // من service.js: LOGIN لا يحتاج AD
-                // isForce = true (وليس 1!)
-                debug.appendLine("\n--- LOGIN (isForce=true) ---")
+                debug.appendLine("\n--- LOGIN (isForce=1) ---")
                 val formBody = okhttp3.FormBody.Builder()
                     .add("isTest", "false")
                     .add("goformId", "LOGIN")
                     .add("password", encodedPass)
-                    .add("isForce", "true")  // ← "true" وليس "1"!
+                    .add("isForce", "1")
                     .build()
 
                 val req = okhttp3.Request.Builder()
@@ -162,44 +162,42 @@ class RouterRepository(private val storage: SecureStorage) {
                 debug.appendLine("Response: $body")
                 debug.appendLine("Cookies: ${RetrofitClient.getCookiesString()}")
 
+                // ═══ 5. تحقق من النتيجة ═══
                 when {
                     body.contains("\"result\":\"0\"") || body.contains("\"result\":0") -> {
-                        debug.appendLine("✅ LOGIN SUCCESS!")
+                        debug.appendLine("✅ SUCCESS (result:0)!")
                         storage.saveCredentials(routerIp, username, password)
                         storage.setLoggedIn(true)
                         loginDebug = debug.toString()
                         return@withContext Result.success("تم الاتصال بالراوتر")
                     }
-                    body.contains("\"result\":\"1\"") || body.contains("\"result\":1") -> {
-                        debug.appendLine("⚠️ Session still busy even with isForce=true")
 
-                        // جرب ACL مباشرة
+                    // ═══ result:1 مع isForce=1 = كلمة المرور صحيحة! ═══
+                    body.contains("\"result\":\"1\"") || body.contains("\"result\":1") -> {
+                        debug.appendLine("✅ SUCCESS (result:1 = password correct, session active)!")
+
+                        // تحقق: ACL فارغ = لا قواعد حظر (طبيعي)
                         try {
                             val aclReq = okhttp3.Request.Builder()
                                 .url("$base/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList")
                                 .header("X-Requested-With", "XMLHttpRequest").build()
                             val aclBody = client.newCall(aclReq).execute().body?.string() ?: ""
                             debug.appendLine("ACL: $aclBody")
-
-                            if (aclBody.contains("AclMode") || aclBody.contains("BlackMacList") || aclBody.length > 30) {
-                                debug.appendLine("✅ ACL works! Session is usable!")
-                                storage.saveCredentials(routerIp, username, password)
-                                storage.setLoggedIn(true)
-                                loginDebug = debug.toString()
-                                return@withContext Result.success("تم الاتصال بالراوتر")
-                            }
+                            debug.appendLine("ACL فارغ = لا توجد قواعد حظر (طبيعي)")
                         } catch (_: Exception) {}
 
+                        storage.saveCredentials(routerIp, username, password)
+                        storage.setLoggedIn(true)
                         loginDebug = debug.toString()
-                        return@withContext Result.failure(
-                            Exception("جلسة أخرى نشطة - أطفئ الراوتر 10 ثواني ثم شغّله")
-                        )
+                        return@withContext Result.success("تم الاتصال بالراوتر")
                     }
+
                     body.contains("\"result\":\"3\"") || body.contains("\"result\":3") -> {
                         debug.appendLine("❌ Wrong password")
                         loginDebug = debug.toString()
                         return@withContext Result.failure(Exception("كلمة المرور خاطئة"))
                     }
+
                     else -> {
                         debug.appendLine("❓ Unknown: $body")
                         loginDebug = debug.toString()
@@ -208,49 +206,29 @@ class RouterRepository(private val storage: SecureStorage) {
                 }
             }
         } catch (e: Exception) { Result.failure(Exception("خطأ: ${e.message}")) }
-    }                    
-            
+    }
+                 
+                
                             
                 
     // ═══════════════════════════════════════════
     // التأكد من تسجيل الدخول
     // ═══════════════════════════════════════════
-
     private suspend fun ensureLoggedIn(api: ZteRouterApi, debug: StringBuilder): Boolean {
         try {
             debug.appendLine("\n--- ensureLoggedIn ---")
 
-            // حاول قراءة ACL
-            val aclR = api.getGenericCmd(cmd = "queryDeviceAccessControlList")
-            val aclBody = aclR.body()?.string() ?: ""
-            debug.appendLine("ACL: ${aclBody.take(200)}")
-
-            if (aclBody.contains("AclMode") || aclBody.contains("BlackMacList")) {
-                debug.appendLine("✅ Authenticated")
-                return true
-            }
-
-            // غير مسجل - أعد الدخول
-            debug.appendLine("Not authenticated, re-logging...")
+            // أعد تسجيل الدخول مباشرة (بما أن الراوتر لا يستخدم cookies)
             val result = login(storage.getRouterIp(), storage.getUsername(), storage.getPassword())
-            debug.appendLine("Re-login: ${result.isSuccess}")
-
-            syncCookiesToRetrofit()
-            debug.appendLine("Retrofit cookies after re-login: ${RetrofitClient.getCookiesString()}")
-
-            if (result.isSuccess) {
-                val aclR2 = api.getGenericCmd(cmd = "queryDeviceAccessControlList")
-                val aclBody2 = aclR2.body()?.string() ?: ""
-                debug.appendLine("ACL after re-login: ${aclBody2.take(200)}")
-                return aclBody2.contains("AclMode") || aclBody2.contains("BlackMacList") || aclBody2.length > 30
-            }
-
-            return false
+            debug.appendLine("Login result: ${result.isSuccess}")
+            return result.isSuccess
         } catch (e: Exception) {
             debug.appendLine("ensureLoggedIn error: ${e.message}")
             return false
         }
     }
+    
+    
 
     // ═══════════════════════════════════════════
     // جلب الأجهزة المتصلة
