@@ -17,16 +17,18 @@ object RetrofitClient {
 
     private val cookieStore = mutableMapOf<String, String>()
 
+    // ═══ OkHttp مشترك لكل العمليات ═══
+    private var httpClient: OkHttpClient? = null
+
     fun setRouterAddress(ip: String) {
         currentBaseUrl = "http://$ip/"
         retrofit = null
         api = null
+        httpClient = null
     }
 
     fun setSessionCookie(name: String, value: String) {
         cookieStore[name] = value
-        retrofit = null
-        api = null
     }
 
     fun getSessionCookie(): String? = cookieStore["zsid"]
@@ -35,45 +37,17 @@ object RetrofitClient {
         return cookieStore.entries.joinToString("; ") { "${it.key}=${it.value}" }
     }
 
-    fun getApi(): ZteRouterApi {
-        if (api == null) {
-            val logging = HttpLoggingInterceptor().apply {
-                level = HttpLoggingInterceptor.Level.HEADERS
-            }
-
-            val client = OkHttpClient.Builder()
+    // ═══ الوصول لـ OkHttp client مباشرة ═══
+    fun getHttpClient(): OkHttpClient {
+        if (httpClient == null) {
+            httpClient = OkHttpClient.Builder()
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(15, TimeUnit.SECONDS)
                 .writeTimeout(15, TimeUnit.SECONDS)
-                .addInterceptor(logging)
-                .addNetworkInterceptor { chain ->
-                    val response = chain.proceed(chain.request())
-                    for (header in response.headers("Set-Cookie")) {
-                        val nameValue = header.split(";")[0]
-                        val parts = nameValue.split("=", limit = 2)
-                        if (parts.size == 2) {
-                            cookieStore[parts[0].trim()] = parts[1].trim()
-                        }
-                    }
-                    response
-                }
-                .addInterceptor { chain ->
-                    val request = chain.request().newBuilder()
-                    val cookieHeader = getCookiesString()
-                    if (cookieHeader.isNotBlank()) {
-                        request.addHeader("Cookie", cookieHeader)
-                    }
-                    // ═══ Referer = صفحة الدخول ═══
-                    request.addHeader("Referer", currentBaseUrl + "m/index.html")
-                    request.addHeader("Accept", "application/json, text/javascript, */*; q=0.01")
-                    request.addHeader("X-Requested-With", "XMLHttpRequest")
-                    request.addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36")
-                    chain.proceed(request.build())
-                }
                 .cookieJar(object : CookieJar {
                     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-                        for (cookie in cookies) {
-                            cookieStore[cookie.name] = cookie.value
+                        for (c in cookies) {
+                            cookieStore[c.name] = c.value
                         }
                     }
                     override fun loadForRequest(url: HttpUrl): List<Cookie> {
@@ -87,14 +61,30 @@ object RetrofitClient {
                         }
                     }
                 })
+                .addInterceptor { chain ->
+                    val request = chain.request().newBuilder()
+                    val cookieHeader = getCookiesString()
+                    if (cookieHeader.isNotBlank()) {
+                        request.addHeader("Cookie", cookieHeader)
+                    }
+                    request.addHeader("Referer", currentBaseUrl + "m/index.html")
+                    request.addHeader("Accept", "application/json, text/javascript, */*; q=0.01")
+                    request.addHeader("X-Requested-With", "XMLHttpRequest")
+                    request.addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36")
+                    chain.proceed(request.build())
+                }
                 .build()
+        }
+        return httpClient!!
+    }
 
+    fun getApi(): ZteRouterApi {
+        if (api == null) {
             retrofit = Retrofit.Builder()
                 .baseUrl(currentBaseUrl)
-                .client(client)
+                .client(getHttpClient())
                 .addConverterFactory(GsonConverterFactory.create())
                 .build()
-
             api = retrofit!!.create(ZteRouterApi::class.java)
         }
         return api!!
@@ -104,5 +94,6 @@ object RetrofitClient {
         cookieStore.clear()
         retrofit = null
         api = null
+        httpClient = null
     }
 }
