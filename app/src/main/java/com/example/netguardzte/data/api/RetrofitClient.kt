@@ -29,13 +29,6 @@ object RetrofitClient {
         api = null
     }
 
-    fun setSessionCookie(cookie: String?) {
-        if (cookie != null) cookieStore["zsid"] = cookie
-        else cookieStore.clear()
-        retrofit = null
-        api = null
-    }
-
     fun getSessionCookie(): String? = cookieStore["zsid"]
 
     fun getCookiesString(): String {
@@ -45,7 +38,7 @@ object RetrofitClient {
     fun getApi(): ZteRouterApi {
         if (api == null) {
             val logging = HttpLoggingInterceptor().apply {
-                level = HttpLoggingInterceptor.Level.BODY
+                level = HttpLoggingInterceptor.Level.HEADERS
             }
 
             val client = OkHttpClient.Builder()
@@ -55,7 +48,6 @@ object RetrofitClient {
                 .addInterceptor(logging)
                 .addNetworkInterceptor { chain ->
                     val response = chain.proceed(chain.request())
-                    // احفظ كل الكوكيز من الاستجابة
                     for (header in response.headers("Set-Cookie")) {
                         val nameValue = header.split(";")[0]
                         val parts = nameValue.split("=", limit = 2)
@@ -71,12 +63,11 @@ object RetrofitClient {
                     if (cookieHeader.isNotBlank()) {
                         request.addHeader("Cookie", cookieHeader)
                     }
-                    // ═══ Headers تُحاكي المتصفح ═══
-                    request.addHeader("Referer", currentBaseUrl)
+                    // ═══ Referer = صفحة الدخول ═══
+                    request.addHeader("Referer", currentBaseUrl + "m/index.html")
                     request.addHeader("Accept", "application/json, text/javascript, */*; q=0.01")
                     request.addHeader("X-Requested-With", "XMLHttpRequest")
-                    request.addHeader("Accept-Language", "en-US,en;q=0.9")
-                    request.addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    request.addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36")
                     chain.proceed(request.build())
                 }
                 .cookieJar(object : CookieJar {
