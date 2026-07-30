@@ -60,11 +60,11 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
 
     init {
         try {
-            storage = SecureStorage(application)
-            repository = RouterRepository(storage)
-        } catch (e: Exception) {
-            storage = SecureStorage(application)
-            repository = RouterRepository(storage)
+                    storage = SecureStorage(application)
+        repository = RouterRepository(storage, application)
+    } catch (e: Exception) {
+        storage = SecureStorage(application)
+        repository = RouterRepository(storage, application)
             saveError("Init error: ${e.message}")
         }
 
