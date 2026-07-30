@@ -300,6 +300,9 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
         )
     }
 
+    fun saveCredentials(ip: String, username: String, password: String) {
+    repository.saveCredentials(ip, username, password)
+    }
     fun navigateTo(screen: String) {
         _uiState.value = _uiState.value.copy(currentScreen = screen)
     }
