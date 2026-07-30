@@ -4,6 +4,12 @@ import android.app.Application
 import com.example.netguardzte.data.api.RouterCommandExecutor
 
 class App : Application() {
+
+    companion object {
+        @JvmStatic
+        var lastCrashText: String = ""
+    }
+
     lateinit var commandExecutor: RouterCommandExecutor
         private set
 
