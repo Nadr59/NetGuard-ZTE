@@ -48,21 +48,9 @@ class MainActivity : ComponentActivity() {
 
                     when (s.currentScreen) {
                         "login" -> LoginScreen(
-                            routerIp = s.routerIp,
-                            username = s.username,
-                            password = s.password,
-                            isLoggingIn = s.isLoggingIn,
-                            error = s.loginError,
-                            crashInfo = s.crashInfo,
-                            debugInfo = s.debugInfo,          // ← جديد
-                            showDebugInfo = s.showDebugInfo,  // ← جديد
-                            onRouterIpChanged = { vm.onRouterIpChanged(it) },
-                            onUsernameChanged = { vm.onUsernameChanged(it) },
-                            onPasswordChanged = { vm.onPasswordChanged(it) },
-                            onLogin = { vm.login() },
-                            onTestRouter = { vm.testRouter() },  // ← جديد
-                            onClearCrash = { vm.clearCrashLog() }
-                        )
+    viewModel = vm,
+    onLoginSuccess = { vm.navigateTo("devices") }
+)
 
                         "devices" -> DevicesScreen(
                             devices = s.devices,
