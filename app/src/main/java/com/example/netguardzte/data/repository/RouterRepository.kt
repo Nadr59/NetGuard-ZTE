@@ -629,7 +629,10 @@ class RouterRepository(private val storage: SecureStorage) {
     // ═══════════════════════════════════════════
     // ARP
     // ═══════════════════════════════════════════
-
+fun saveCredentials(ip: String, username: String, password: String) {
+    storage.saveCredentials(ip, username, password)
+    storage.setLoggedIn(true)
+}
     private suspend fun readArpFromAllSources(debug: StringBuilder): List<Device> {
         var d = readIpNeigh(debug)
         if (d.isNotEmpty()) return d
