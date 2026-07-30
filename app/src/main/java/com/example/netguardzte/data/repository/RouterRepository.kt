@@ -27,9 +27,6 @@ class RouterRepository(private val storage: SecureStorage) {
     var allCommandsDebug: String = ""
         private set
 
-    // ═══ SHA256("") = قيمة ثابتة ═══
-    private val SHA256_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-
     private fun sha256(input: String): String =
         MessageDigest.getInstance("SHA-256")
             .digest(input.toByteArray(Charsets.UTF_8))
@@ -46,48 +43,54 @@ class RouterRepository(private val storage: SecureStorage) {
                 body.contains("\"result\":\"0\"")
 
     private fun extractField(json: String, field: String): String {
-        val regex = Regex(""""$field"\s*:\s*"([^"]*?)"""")
-        return regex.find(json)?.groupValues?.getOrNull(1) ?: ""
-    }
-
-    private fun httpGet(url: String): String {
-        return try {
-            val req = Request.Builder().url(url).build()
-            RetrofitClient.getHttpClient().newCall(req).execute()
-                .body?.string() ?: ""
-        } catch (e: Exception) { "" }
-    }
-
-    private fun httpPost(url: String, formBody: FormBody): String {
-        return try {
-            val req = Request.Builder().url(url).post(formBody).build()
-            RetrofitClient.getHttpClient().newCall(req).execute()
-                .body?.string() ?: ""
-        } catch (e: Exception) { "" }
+        return Regex(""""$field"\s*:\s*"([^"]*?)"""")
+            .find(json)?.groupValues?.getOrNull(1) ?: ""
     }
 
     // ═══════════════════════════════════════════
-    // AD = SHA256(SHA256("") + RD)
-    // من service.js: cookWithRequest(rd0 + rd1) + RD
-    // rd0="" rd1="" من main.js
+    // AD = SHA256(SHA256(wa+cr) + RD)
+    // من service.js: cookWithRequest(cookWithRequest(rd0+rd1) + RD)
+    // cookWithRequest = SHA256
+    // rd0 = wa_inner_version, rd1 = cr_version
     // ═══════════════════════════════════════════
 
-    private fun computeAd(base: String, debug: StringBuilder): String {
+    private fun computeAd(client: OkHttpClient, base: String, debug: StringBuilder): String {
         try {
-            val rdBody = httpGet(
-                "$base/goform/goform_get_cmd_process?cmd=RD"
-            )
-            val rd = extractField(rdBody, "RD")
-            debug.appendLine("RD: ${rd.take(20)}...")
+            fun get(url: String): String {
+                return try {
+                    client.newCall(Request.Builder().url(url).build())
+                        .execute().body?.string() ?: ""
+                } catch (_: Exception) { "" }
+            }
 
-            if (rd.isBlank()) {
-                debug.appendLine("RD empty!")
+            val wa = extractField(
+                get("$base/goform/goform_get_cmd_process?cmd=wa_inner_version"),
+                "wa_inner_version"
+            )
+            val cr = extractField(
+                get("$base/goform/goform_get_cmd_process?cmd=cr_version"),
+                "cr_version"
+            )
+            val rd = extractField(
+                get("$base/goform/goform_set_cmd_process?nv=RD&_=${System.currentTimeMillis()}"),
+                "RD"
+            ).ifBlank {
+                extractField(
+                    get("$base/goform/goform_get_cmd_process?cmd=RD"),
+                    "RD"
+                )
+            }
+
+            debug.appendLine("wa=${wa.take(20)} cr=$cr RD=${rd.take(16)}")
+
+            if (wa.isBlank() || cr.isBlank() || rd.isBlank()) {
+                debug.appendLine("Missing data for AD")
                 return ""
             }
 
-            // AD = SHA256(SHA256("") + RD)
-            val ad = sha256(SHA256_EMPTY + rd)
-            debug.appendLine("AD=$ad")
+            // ═══ SHA256 وليس MD5! ═══
+            val ad = sha256(sha256(wa + cr) + rd)
+            debug.appendLine("AD=$ad (${ad.length} chars)")
             return ad
         } catch (e: Exception) {
             debug.appendLine("AD error: ${e.message}")
@@ -96,12 +99,7 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     // ═══════════════════════════════════════════
-    // LOGIN
-    // من service.js:
-    //   WEB_ATTR_IF_SUPPORT_SHA256 = 2
-    //   password = SHA256(SHA256(pass) + LD)
-    //   LOGIN لا يحتاج AD
-    //   wr({nv:"LD"}) → GET /goform/goform_set_cmd_process?nv=LD
+    // LOGIN — مثل المتصفح بالضبط
     // ═══════════════════════════════════════════
 
     suspend fun login(
@@ -116,93 +114,116 @@ class RouterRepository(private val storage: SecureStorage) {
 
                 RetrofitClient.setRouterAddress(routerIp)
                 val base = "http://$routerIp"
+                val client = RetrofitClient.getHttpClient()
 
-                // ═══ 1. حمّل الصفحة ═══
-                httpGet("$base/m/index.html")
-
-                // ═══ 2. اجلب LD ═══
-                debug.appendLine("\n--- LD ---")
-                val ldBody = httpGet(
-                    "$base/goform/goform_get_cmd_process?cmd=LD"
-                )
-                val ld = extractField(ldBody, "LD")
-                debug.appendLine("LD: ${ld.take(20)}...")
-
-                if (ld.isBlank()) {
-                    debug.appendLine("LD empty!")
-                    loginDebug = debug.toString()
-                    return@withContext Result.failure(
-                        Exception("cannot get LD")
-                    )
+                fun get(url: String): String {
+                    return try {
+                        client.newCall(Request.Builder().url(url).build())
+                            .execute().body?.string() ?: ""
+                    } catch (_: Exception) { "" }
                 }
 
-                // ═══ 3. شفر: SHA256(SHA256(pass) + LD) ═══
+                fun post(url: String, body: FormBody): String {
+                    return try {
+                        client.newCall(Request.Builder().url(url).post(body).build())
+                            .execute().body?.string() ?: ""
+                    } catch (_: Exception) { "" }
+                }
+
+                // ═══ 1. حمّل الصفحة ═══
+                debug.appendLine("\n--- Page ---")
+                get("$base/m/index.html")
+                debug.appendLine("Loaded")
+
+                // ═══ 2. طلبات التهيئة (مثل المتصفح) ═══
+                debug.appendLine("\n--- Init requests ---")
+                val langBody = get("$base/goform/goform_get_cmd_process?cmd=Language")
+                debug.appendLine("Language: ${langBody.take(50)}")
+                get("$base/goform/goform_get_cmd_process?cmd=wa_inner_version")
+                get("$base/goform/goform_get_cmd_process?cmd=cr_version")
+                get("$base/goform/goform_get_cmd_process?cmd=RD")
+                debug.appendLine("Init done")
+
+                // ═══ 3. جرّب nv=LD (بدون إنشاء جلسة!) ═══
+                debug.appendLine("\n--- nv=LD ---")
+                val ts = System.currentTimeMillis()
+                val nvLdBody = get(
+                    "$base/goform/goform_set_cmd_process?nv=LD&_=$ts"
+                )
+                debug.appendLine("nv=LD: $nvLdBody")
+                var ld = extractField(nvLdBody, "LD")
+
+                // ═══ 4. إذا nv=LD فشل، جرب cmd=LD ═══
+                if (ld.isBlank()) {
+                    debug.appendLine("nv=LD empty, trying cmd=LD...")
+                    val cmdLdBody = get(
+                        "$base/goform/goform_get_cmd_process?cmd=LD"
+                    )
+                    debug.appendLine("cmd=LD: $cmdLdBody")
+                    ld = extractField(cmdLdBody, "LD")
+                }
+
+                debug.appendLine("LD: '${ld.take(20)}...'")
+
+                if (ld.isBlank()) {
+                    debug.appendLine("Cannot get LD!")
+                    loginDebug = debug.toString()
+                    return@withContext Result.failure(Exception("Cannot get LD"))
+                }
+
+                // ═══ 5. شفر: SHA256(SHA256(pass) + LD) ═══
                 val sha256Pass = sha256(password)
                 val encodedPass = sha256(sha256Pass + ld)
                 debug.appendLine("SHA256(pass): ${sha256Pass.take(20)}...")
-                debug.appendLine("SHA256(SHA256+LD): $encodedPass")
+                debug.appendLine("Encoded: ${encodedPass.take(40)}...")
 
-                // ═══ 4. LOGIN (بدون AD!) ═══
+                // ═══ 6. LOGIN — بدون isForce، بدون AD ═══
+                // (من service.js: {isTest:false, goformId:"LOGIN", password:..., save_login:false})
                 debug.appendLine("\n--- LOGIN ---")
-                val formBody = FormBody.Builder()
-                    .add("isTest", "false")
-                    .add("goformId", "LOGIN")
-                    .add("password", encodedPass)
-                    .add("isForce", "1")
-                    .build()
-
-                val body = httpPost(
+                val loginBody = post(
                     "$base/goform/goform_set_cmd_process",
-                    formBody
+                    FormBody.Builder()
+                        .add("isTest", "false")
+                        .add("goformId", "LOGIN")
+                        .add("password", encodedPass)
+                        .add("save_login", "false")
+                        .build()
                 )
-                debug.appendLine("Response: $body")
+                debug.appendLine("Response: $loginBody")
 
                 when {
-                    body.contains("\"result\":\"0\"") ||
-                            body.contains("\"result\":0") -> {
-                        debug.appendLine("SUCCESS (result:0)!")
-                        storage.saveCredentials(
-                            routerIp, username, password
-                        )
+                    loginBody.contains("\"result\":\"0\"") ||
+                            loginBody.contains("\"result\":0") -> {
+                        debug.appendLine("SUCCESS!")
+                        storage.saveCredentials(routerIp, username, password)
                         storage.setLoggedIn(true)
                         loginDebug = debug.toString()
                         return@withContext Result.success("done")
                     }
-                    body.contains("\"result\":\"1\"") ||
-                            body.contains("\"result\":1") -> {
-                        // ═══ result:1 = جلسة نشطة = نجاح! ═══
-                        debug.appendLine("ACCEPTED (result:1)!")
-
-                        // تحقق: جرب قراءة أمر بسيط
-                        val testBody = httpGet(
-                            "$base/goform/goform_get_cmd_process" +
-                                    "?cmd=queryDeviceAccessControlList"
-                        )
-                        debug.appendLine("ACL test: $testBody")
-
-                        storage.saveCredentials(
-                            routerIp, username, password
-                        )
+                    loginBody.contains("\"result\":\"4\"") ||
+                            loginBody.contains("\"result\":4") -> {
+                        debug.appendLine("SUCCESS (result:4)!")
+                        storage.saveCredentials(routerIp, username, password)
                         storage.setLoggedIn(true)
                         loginDebug = debug.toString()
                         return@withContext Result.success("done")
                     }
-                    body.contains("\"result\":\"3\"") ||
-                            body.contains("\"result\":3") -> {
+                    loginBody.contains("\"result\":\"3\"") ||
+                            loginBody.contains("\"result\":3") -> {
                         debug.appendLine("WRONG PASSWORD!")
-                        loginDebug = debug.toString()
-                        return@withContext Result.failure(
-                            Exception("wrong password")
-                        )
+                    }
+                    loginBody.contains("\"result\":\"1\"") ||
+                            loginBody.contains("\"result\":1") -> {
+                        debug.appendLine("Login Fail (session conflict?)")
                     }
                     else -> {
-                        debug.appendLine("Unknown: $body")
-                        loginDebug = debug.toString()
-                        return@withContext Result.failure(
-                            Exception("unknown: $body")
-                        )
+                        debug.appendLine("Unknown: $loginBody")
                     }
                 }
+
+                debug.appendLine("\n=== FAILED ===")
+                loginDebug = debug.toString()
+                Result.failure(Exception("Login failed"))
             }
         } catch (e: Exception) {
             Result.failure(Exception("error: ${e.message}"))
@@ -228,8 +249,7 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     // ═══════════════════════════════════════════
-    // BLOCK
-    // AD = SHA256(SHA256("") + RD) (وليس MD5!)
+    // BLOCK — AD بـ SHA256
     // ═══════════════════════════════════════════
 
     suspend fun blockDevice(
@@ -241,26 +261,30 @@ class RouterRepository(private val storage: SecureStorage) {
                 val debug = StringBuilder()
                 val macUpper = mac.uppercase().trim()
                 val base = "http://${storage.getRouterIp()}"
+                val client = RetrofitClient.getHttpClient()
 
                 debug.appendLine("=== BLOCK $macUpper ===")
 
                 if (!ensureLoggedIn(RetrofitClient.getApi(), debug)) {
                     lastRawResponse = debug.toString()
                     allCommandsDebug = debug.toString()
-                    return@withContext Result.failure(
-                        Exception("not logged in")
-                    )
+                    return@withContext Result.failure(Exception("not logged in"))
                 }
 
-                val aclBody = httpGet(
-                    "$base/goform/goform_get_cmd_process" +
-                            "?cmd=queryDeviceAccessControlList"
+                fun get(url: String): String {
+                    return try {
+                        client.newCall(Request.Builder().url(url).build())
+                            .execute().body?.string() ?: ""
+                    } catch (_: Exception) { "" }
+                }
+
+                val aclBody = get(
+                    "$base/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList"
                 )
                 debug.appendLine("ACL: $aclBody")
 
-                val existingMacs = Regex(
-                    """"BlackMacList"\s*:\s*"([^"]*?)""""
-                ).find(aclBody)?.groupValues?.getOrNull(1)
+                val existingMacs = Regex(""""BlackMacList"\s*:\s*"([^"]*?)"""")
+                    .find(aclBody)?.groupValues?.getOrNull(1)
                     ?.split(";")
                     ?.map { it.trim().uppercase() }
                     ?.filter {
@@ -273,12 +297,11 @@ class RouterRepository(private val storage: SecureStorage) {
                 if (macUpper !in existingMacs) {
                     existingMacs.add(macUpper)
                 }
-                val newBlackList =
-                    existingMacs.joinToString(";") + ";"
+                val newBlackList = existingMacs.joinToString(";") + ";"
                 debug.appendLine("New: $newBlackList")
 
-                // AD = SHA256(SHA256("") + RD)
-                val ad = computeAd(base, debug)
+                // AD بـ SHA256!
+                val ad = computeAd(client, base, debug)
 
                 val formBody = FormBody.Builder()
                     .add("isTest", "false")
@@ -291,10 +314,13 @@ class RouterRepository(private val storage: SecureStorage) {
                     .add("AD", ad)
                     .build()
 
-                val resp = httpPost(
-                    "$base/goform/goform_set_cmd_process",
-                    formBody
-                )
+                val resp = client.newCall(
+                    Request.Builder()
+                        .url("$base/goform/goform_set_cmd_process")
+                        .post(formBody)
+                        .build()
+                ).execute().body?.string() ?: ""
+
                 debug.appendLine("Response: $resp")
 
                 lastRawResponse = debug.toString()
@@ -324,17 +350,23 @@ class RouterRepository(private val storage: SecureStorage) {
                 val debug = StringBuilder()
                 val macUpper = mac.uppercase().trim()
                 val base = "http://${storage.getRouterIp()}"
+                val client = RetrofitClient.getHttpClient()
 
                 debug.appendLine("=== UNBLOCK $macUpper ===")
                 ensureLoggedIn(RetrofitClient.getApi(), debug)
 
-                val aclBody = httpGet(
-                    "$base/goform/goform_get_cmd_process" +
-                            "?cmd=queryDeviceAccessControlList"
+                fun get(url: String): String {
+                    return try {
+                        client.newCall(Request.Builder().url(url).build())
+                            .execute().body?.string() ?: ""
+                    } catch (_: Exception) { "" }
+                }
+
+                val aclBody = get(
+                    "$base/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList"
                 )
-                val existingMacs = Regex(
-                    """"BlackMacList"\s*:\s*"([^"]*?)""""
-                ).find(aclBody)?.groupValues?.getOrNull(1)
+                val existingMacs = Regex(""""BlackMacList"\s*:\s*"([^"]*?)"""")
+                    .find(aclBody)?.groupValues?.getOrNull(1)
                     ?.split(";")
                     ?.map { it.trim().uppercase() }
                     ?.filter {
@@ -345,37 +377,38 @@ class RouterRepository(private val storage: SecureStorage) {
                     ?.toMutableList() ?: mutableListOf()
 
                 existingMacs.remove(macUpper)
-                val newAclMode =
-                    if (existingMacs.isEmpty()) "0" else "2"
+                val newAclMode = if (existingMacs.isEmpty()) "0" else "2"
                 val newBlackList =
                     if (existingMacs.isEmpty()) ""
                     else existingMacs.joinToString(";") + ";"
 
-                val ad = computeAd(base, debug)
+                val ad = computeAd(client, base, debug)
 
-                val formBody = FormBody.Builder()
-                    .add("isTest", "false")
-                    .add("goformId", "setDeviceAccessControlList")
-                    .add("AclMode", newAclMode)
-                    .add("BlackMacList", newBlackList)
-                    .add("WhiteMacList", "")
-                    .add("WhiteNameList", "")
-                    .add("BlackNameList", "")
-                    .add("AD", ad)
-                    .build()
-
-                val body = httpPost(
-                    "$base/goform/goform_set_cmd_process",
-                    formBody
-                )
+                val resp = client.newCall(
+                    Request.Builder()
+                        .url("$base/goform/goform_set_cmd_process")
+                        .post(
+                            FormBody.Builder()
+                                .add("isTest", "false")
+                                .add("goformId", "setDeviceAccessControlList")
+                                .add("AclMode", newAclMode)
+                                .add("BlackMacList", newBlackList)
+                                .add("WhiteMacList", "")
+                                .add("WhiteNameList", "")
+                                .add("BlackNameList", "")
+                                .add("AD", ad)
+                                .build()
+                        )
+                        .build()
+                ).execute().body?.string() ?: ""
 
                 lastRawResponse = debug.toString()
                 allCommandsDebug = debug.toString()
 
-                if (isSuccess(body)) {
+                if (isSuccess(resp)) {
                     Result.success("unblocked $macUpper")
                 } else {
-                    Result.failure(Exception("failed: $body"))
+                    Result.failure(Exception("failed: $resp"))
                 }
             }
         } catch (e: Exception) {
@@ -384,7 +417,7 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     // ═══════════════════════════════════════════
-    // DEVICES
+    // DEVICES + BLOCKED + TEST + LOGOUT
     // ═══════════════════════════════════════════
 
     suspend fun getConnectedDevices(): Result<List<Device>> {
@@ -393,7 +426,7 @@ class RouterRepository(private val storage: SecureStorage) {
                 val debug = StringBuilder()
                 val routerIp = try {
                     storage.getRouterIp()
-                } catch (e: Exception) { "192.168.0.1" }
+                } catch (_: Exception) { "192.168.0.1" }
                 val subnet = routerIp.substringBeforeLast(".")
                 debug.appendLine("=== DEVICE SCAN ===")
 
@@ -401,31 +434,24 @@ class RouterRepository(private val storage: SecureStorage) {
                     Runtime.getRuntime().exec(
                         arrayOf("sh", "-c", "ip neigh flush dev wlan0")
                     ).waitFor()
-                } catch (e: Exception) {}
+                } catch (_: Exception) {}
 
                 for (i in 1..50) {
                     try {
                         val s = java.net.Socket()
                         s.connect(
-                            java.net.InetSocketAddress(
-                                "$subnet.$i", 80
-                            ), 30
+                            java.net.InetSocketAddress("$subnet.$i", 80), 30
                         )
                         s.close()
-                    } catch (e: Exception) {}
+                    } catch (_: Exception) {}
                 }
 
                 var devices = readArpFromAllSources(debug)
-                if (devices.isEmpty()) {
-                    devices = readFromRouterApi(debug)
-                }
+                if (devices.isEmpty()) devices = readFromRouterApi(debug)
 
                 allCommandsDebug = debug.toString()
-                if (devices.isNotEmpty()) {
-                    Result.success(devices)
-                } else {
-                    Result.failure(Exception("no devices"))
-                }
+                if (devices.isNotEmpty()) Result.success(devices)
+                else Result.failure(Exception("no devices"))
             }
         } catch (e: Exception) {
             Result.failure(Exception("error: ${e.message}"))
@@ -438,13 +464,16 @@ class RouterRepository(private val storage: SecureStorage) {
                 val debug = StringBuilder()
                 ensureLoggedIn(RetrofitClient.getApi(), debug)
                 val base = "http://${storage.getRouterIp()}"
-                val aclBody = httpGet(
-                    "$base/goform/goform_get_cmd_process" +
-                            "?cmd=queryDeviceAccessControlList"
-                )
-                val macs = Regex(
-                    """"BlackMacList"\s*:\s*"([^"]*?)""""
-                ).find(aclBody)?.groupValues?.getOrNull(1)
+                val aclBody = try {
+                    RetrofitClient.getHttpClient().newCall(
+                        Request.Builder().url(
+                            "$base/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList"
+                        ).build()
+                    ).execute().body?.string() ?: ""
+                } catch (_: Exception) { "" }
+
+                val macs = Regex(""""BlackMacList"\s*:\s*"([^"]*?)"""")
+                    .find(aclBody)?.groupValues?.getOrNull(1)
                     ?.split(";")
                     ?.map { it.trim().uppercase() }
                     ?.filter {
@@ -452,6 +481,7 @@ class RouterRepository(private val storage: SecureStorage) {
                             Regex("([0-9A-F]{2}:){5}[0-9A-F]{2}")
                         )
                     } ?: emptyList()
+
                 allCommandsDebug = debug.toString()
                 Result.success(macs)
             }
@@ -465,36 +495,23 @@ class RouterRepository(private val storage: SecureStorage) {
             withContext(Dispatchers.IO) {
                 val debug = StringBuilder()
                 debug.appendLine("=== TEST ===")
-                val loginResult = login(
+                val result = login(
                     storage.getRouterIp(),
                     storage.getUsername(),
                     storage.getPassword()
                 )
-                debug.appendLine("Login: ${loginResult.isSuccess}")
+                debug.appendLine("Login: ${result.isSuccess}")
                 debug.appendLine(loginDebug)
 
-                if (loginResult.isSuccess) {
-                    val base = "http://${storage.getRouterIp()}"
-                    debug.appendLine("\nACL: ${httpGet("$base/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList")}")
-
-                    // جرب الحظر
-                    debug.appendLine("\n--- BLOCK TEST ---")
-                    val ad = computeAd(base, debug)
-                    val blockBody = httpPost(
-                        "$base/goform/goform_set_cmd_process",
-                        FormBody.Builder()
-                            .add("isTest", "false")
-                            .add("goformId", "setDeviceAccessControlList")
-                            .add("AclMode", "2")
-                            .add("BlackMacList", "AA:BB:CC:DD:EE:FF;")
-                            .add("WhiteMacList", "")
-                            .add("WhiteNameList", "")
-                            .add("BlackNameList", "")
-                            .add("AD", ad)
-                            .build()
-                    )
-                    debug.appendLine("BLOCK: $blockBody")
-                }
+                val base = "http://${storage.getRouterIp()}"
+                val acl = try {
+                    RetrofitClient.getHttpClient().newCall(
+                        Request.Builder().url(
+                            "$base/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList"
+                        ).build()
+                    ).execute().body?.string() ?: ""
+                } catch (_: Exception) { "" }
+                debug.appendLine("\nACL: $acl")
 
                 Result.success(debug.toString())
             }
@@ -508,9 +525,9 @@ class RouterRepository(private val storage: SecureStorage) {
             withContext(Dispatchers.IO) {
                 try {
                     RetrofitClient.getApi().logout()
-                } catch (e: Exception) {}
+                } catch (_: Exception) {}
             }
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
         storage.setLoggedIn(false)
         RetrofitClient.reset()
     }
@@ -519,9 +536,7 @@ class RouterRepository(private val storage: SecureStorage) {
     // ARP
     // ═══════════════════════════════════════════
 
-    private suspend fun readArpFromAllSources(
-        debug: StringBuilder
-    ): List<Device> {
+    private suspend fun readArpFromAllSources(debug: StringBuilder): List<Device> {
         var d = readIpNeigh(debug)
         if (d.isNotEmpty()) return d
         d = readArpFromFile()
@@ -532,9 +547,7 @@ class RouterRepository(private val storage: SecureStorage) {
     private fun readIpNeigh(debug: StringBuilder): List<Device> {
         val devices = mutableListOf<Device>()
         try {
-            val p = Runtime.getRuntime().exec(
-                arrayOf("sh", "-c", "ip neigh")
-            )
+            val p = Runtime.getRuntime().exec(arrayOf("sh", "-c", "ip neigh"))
             val r = BufferedReader(InputStreamReader(p.inputStream))
             var line = r.readLine()
             while (line != null) {
@@ -546,7 +559,7 @@ class RouterRepository(private val storage: SecureStorage) {
                 line = r.readLine()
             }
             p.waitFor()
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
         return devices
     }
 
@@ -564,25 +577,19 @@ class RouterRepository(private val storage: SecureStorage) {
                     parts[3].uppercase() != "00:00:00:00:00:00" &&
                     parts[2] != "0x0"
                 ) {
-                    devices.add(
-                        makeDevice(parts[0], parts[3].uppercase())
-                    )
+                    devices.add(makeDevice(parts[0], parts[3].uppercase()))
                 }
                 line = r.readLine()
             }
             r.close()
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
         return devices
     }
 
-    private fun readArpFromCommand(
-        command: String
-    ): List<Device> {
+    private fun readArpFromCommand(command: String): List<Device> {
         val devices = mutableListOf<Device>()
         try {
-            val p = Runtime.getRuntime().exec(
-                arrayOf("sh", "-c", command)
-            )
+            val p = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
             val r = BufferedReader(InputStreamReader(p.inputStream))
             var line = r.readLine()
             while (line != null) {
@@ -591,18 +598,15 @@ class RouterRepository(private val storage: SecureStorage) {
             }
             p.waitFor()
             p.destroy()
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
         return devices
     }
 
     private fun parseArpLine(line: String): Device? {
         val mac = Regex(
-            "[0-9A-Fa-f]{2}[:\\-]" +
-                    "[0-9A-Fa-f]{2}[:\\-]" +
-                    "[0-9A-Fa-f]{2}[:\\-]" +
-                    "[0-9A-Fa-f]{2}[:\\-]" +
-                    "[0-9A-Fa-f]{2}[:\\-]" +
-                    "[0-9A-Fa-f]{2}"
+            "[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-]" +
+                    "[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}[:\\-]" +
+                    "[0-9A-Fa-f]{2}[:\\-][0-9A-Fa-f]{2}"
         ).find(line)?.value?.uppercase() ?: return null
         if (mac == "00:00:00:00:00:00") return null
         val ip = Regex("(\\d{1,3}\\.){3}\\d{1,3}")
@@ -610,18 +614,19 @@ class RouterRepository(private val storage: SecureStorage) {
         return makeDevice(ip, mac)
     }
 
-    private suspend fun readFromRouterApi(
-        debug: StringBuilder
-    ): List<Device> {
+    private suspend fun readFromRouterApi(debug: StringBuilder): List<Device> {
         try {
             val base = "http://${storage.getRouterIp()}"
-            for (cmd in listOf(
-                "station_list", "wifi_station_list", "dhcp_list"
-            )) {
+            for (cmd in listOf("station_list", "wifi_station_list", "dhcp_list")) {
                 try {
-                    val body = httpGet(
-                        "$base/goform/goform_get_cmd_process?cmd=$cmd"
-                    )
+                    val body = try {
+                        RetrofitClient.getHttpClient().newCall(
+                            Request.Builder().url(
+                                "$base/goform/goform_get_cmd_process?cmd=$cmd"
+                            ).build()
+                        ).execute().body?.string() ?: ""
+                    } catch (_: Exception) { "" }
+
                     debug.appendLine("  [$cmd]: ${body.take(100)}")
                     if (body.length > 30) {
                         val d = parseDevices(body)
@@ -638,9 +643,7 @@ class RouterRepository(private val storage: SecureStorage) {
     }
 
     private fun makeDevice(ip: String, mac: String): Device {
-        val rIp = try {
-            storage.getRouterIp()
-        } catch (e: Exception) { "" }
+        val rIp = try { storage.getRouterIp() } catch (_: Exception) { "" }
         return Device(
             mac = mac,
             ip = ip,
@@ -651,14 +654,10 @@ class RouterRepository(private val storage: SecureStorage) {
 
     private fun nameFor(ip: String, mac: String): String {
         val v = when {
-            mac.startsWith("A4:83") ||
-                    mac.startsWith("F0:18") -> "Apple"
-            mac.startsWith("CC:96") ||
-                    mac.startsWith("58:48") -> "Huawei"
-            mac.startsWith("70:F9") ||
-                    mac.startsWith("94:B8") -> "Samsung"
-            mac.startsWith("6C:B0") ||
-                    mac.startsWith("54:FA") -> "Xiaomi"
+            mac.startsWith("A4:83") || mac.startsWith("F0:18") -> "Apple"
+            mac.startsWith("CC:96") || mac.startsWith("58:48") -> "Huawei"
+            mac.startsWith("70:F9") || mac.startsWith("94:B8") -> "Samsung"
+            mac.startsWith("6C:B0") || mac.startsWith("54:FA") -> "Xiaomi"
             mac.startsWith("00:21") -> "ZTE"
             else -> ""
         }
@@ -672,9 +671,8 @@ class RouterRepository(private val storage: SecureStorage) {
 
     private fun parseDevices(raw: String): List<Device> {
         try {
-            val macs = Regex(
-                "([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}"
-            ).findAll(raw)
+            val macs = Regex("([0-9A-Fa-f]{2}[:\\-]){5}[0-9A-Fa-f]{2}")
+                .findAll(raw)
                 .map { it.value.uppercase() }
                 .distinct()
                 .toList()
@@ -691,6 +689,8 @@ class RouterRepository(private val storage: SecureStorage) {
                     connectionType = "WiFi"
                 )
             }
-        } catch (e: Exception) { return emptyList() }
+        } catch (_: Exception) {
+            return emptyList()
+        }
     }
 }
