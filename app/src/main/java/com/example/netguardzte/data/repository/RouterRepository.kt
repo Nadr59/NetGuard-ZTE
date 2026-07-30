@@ -490,29 +490,123 @@ class RouterRepository(private val storage: SecureStorage) {
         }
     }
 
-    suspend fun testRouterConnection(): Result<String> {
+        suspend fun testRouterConnection(): Result<String> {
         return try {
             withContext(Dispatchers.IO) {
                 val debug = StringBuilder()
-                debug.appendLine("=== TEST ===")
-                val result = login(
-                    storage.getRouterIp(),
-                    storage.getUsername(),
-                    storage.getPassword()
-                )
-                debug.appendLine("Login: ${result.isSuccess}")
-                debug.appendLine(loginDebug)
+                val host = storage.getRouterIp()
+                val password = storage.getPassword()
 
-                val base = "http://${storage.getRouterIp()}"
-                val acl = try {
-                    RetrofitClient.getHttpClient().newCall(
-                        Request.Builder().url(
-                            "$base/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList"
-                        ).build()
-                    ).execute().body?.string() ?: ""
-                } catch (_: Exception) { "" }
-                debug.appendLine("\nACL: $acl")
+                debug.appendLine("=== RAW SOCKET TEST ===")
 
+                fun rawHttp(method: String, path: String,
+                            body: String = "",
+                            cookies: String = ""): Triple<String, String, String> {
+                    val socket = java.net.Socket(host, 80)
+                    socket.soTimeout = 10000
+                    val sb = StringBuilder()
+                    sb.append("$method $path HTTP/1.1\r\n")
+                    sb.append("Host: $host\r\n")
+                    sb.append("Connection: close\r\n")
+                    if (cookies.isNotBlank()) sb.append("Cookie: $cookies\r\n")
+                    sb.append("Accept: text/javascript, application/javascript, application/ecmascript, application/x-ecmascript, */*; q=0.01\r\n")
+                    sb.append("X-Requested-With: XMLHttpRequest\r\n")
+                    sb.append("Referer: http://$host/m/index.html\r\n")
+                    sb.append("User-Agent: Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36\r\n")
+                    if (body.isNotBlank()) {
+                        sb.append("Content-Type: application/x-www-form-urlencoded; charset=UTF-8\r\n")
+                        sb.append("Content-Length: ${body.toByteArray().size}\r\n")
+                    }
+                    sb.append("\r\n")
+                    if (body.isNotBlank()) sb.append(body)
+
+                    socket.getOutputStream().write(sb.toString().toByteArray())
+                    socket.getOutputStream().flush()
+
+                    val resp = StringBuilder()
+                    val buf = ByteArray(8192)
+                    try {
+                        var n: Int
+                        while (socket.getInputStream().read(buf).also { n = it } != -1) {
+                            resp.append(String(buf, 0, n))
+                        }
+                    } catch (_: Exception) {}
+                    socket.close()
+
+                    val r = resp.toString()
+                    val hEnd = r.indexOf("\r\n\r\n")
+                    val headers = if (hEnd >= 0) r.substring(0, hEnd) else ""
+                    val respBody = (if (hEnd >= 0) r.substring(hEnd + 4) else r).trim()
+                    val setCookie = headers.lines()
+                        .filter { it.startsWith("Set-Cookie:", true) }
+                        .joinToString("; ") {
+                            it.substringAfter(":").trim().split(";")[0].trim()
+                        }
+                    return Triple(headers.lines().first(), respBody, setCookie)
+                }
+
+                // 1. Page
+                debug.appendLine("\n--- 1. Page ---")
+                val (_, _, c1) = rawHttp("GET", "/m/index.html")
+                debug.appendLine("Cookies: '$c1'")
+                var ck = c1
+
+                // 2. Language
+                debug.appendLine("\n--- 2. Language ---")
+                val (_, b2, c2) = rawHttp("GET", "/goform/goform_get_cmd_process?cmd=Language", cookies = ck)
+                debug.appendLine("Body: $b2")
+                debug.appendLine("Cookies: '$c2'")
+                if (c2.isNotBlank()) ck = if (ck.isNotBlank()) "$ck; $c2" else c2
+
+                // 3. nv=LD (THE CORRECT WAY!)
+                debug.appendLine("\n--- 3. nv=LD ---")
+                val (_, b3, c3) = rawHttp("GET", "/goform/goform_set_cmd_process?nv=LD", cookies = ck)
+                debug.appendLine("Body: $b3")
+                debug.appendLine("Cookies: '$c3'")
+                if (c3.isNotBlank()) ck = if (ck.isNotBlank()) "$ck; $c3" else c3
+                val nvLd = extractField(b3, "LD")
+                debug.appendLine("nv LD: '${nvLd.take(30)}...'")
+
+                // 4. cmd=LD for comparison
+                debug.appendLine("\n--- 4. cmd=LD ---")
+                val (_, b4, c4) = rawHttp("GET", "/goform/goform_get_cmd_process?cmd=LD", cookies = ck)
+                debug.appendLine("Body: $b4")
+                debug.appendLine("Cookies: '$c4'")
+                if (c4.isNotBlank()) ck = if (ck.isNotBlank()) "$ck; $c4" else c4
+                val cmdLd = extractField(b4, "LD")
+                debug.appendLine("cmd LD: '${cmdLd.take(30)}...'")
+
+                // 5. Compare
+                debug.appendLine("\n--- 5. COMPARE ---")
+                debug.appendLine("nv  LD: $nvLd")
+                debug.appendLine("cmd LD: $cmdLd")
+                debug.appendLine("Same? ${nvLd == cmdLd}")
+
+                // 6. LOGIN with nv=LD (if available)
+                val bestLd = if (nvLd.isNotBlank()) nvLd else cmdLd
+                if (bestLd.isNotBlank()) {
+                    debug.appendLine("\n--- 6. LOGIN (SHA256(SHA256+LD)) ---")
+                    val encoded = sha256(sha256(password) + bestLd)
+                    debug.appendLine("Encoded: $encoded")
+
+                    val loginBody = "isTest=false&goformId=LOGIN&password=$encoded"
+                    val (_, b6, c6) = rawHttp("POST", "/goform/goform_set_cmd_process",
+                        body = loginBody, cookies = ck)
+                    debug.appendLine("Response: $b6")
+                    debug.appendLine("Cookies: '$c6'")
+
+                    // 7. If failed, try SHA256(pass+LD)
+                    if (b6.contains("\"result\":\"3\"") || b6.contains("\"result\":1")) {
+                        debug.appendLine("\n--- 7. LOGIN (SHA256(pass+LD)) ---")
+                        val encoded2 = sha256(password + bestLd)
+                        val loginBody2 = "isTest=false&goformId=LOGIN&password=$encoded2"
+                        val (_, b7, c7) = rawHttp("POST", "/goform/goform_set_cmd_process",
+                            body = loginBody2, cookies = ck)
+                        debug.appendLine("Response: $b7")
+                    }
+                }
+
+                debug.appendLine("\n=== END ===")
                 Result.success(debug.toString())
             }
         } catch (e: Exception) {
