@@ -23,7 +23,6 @@ import com.example.netguardzte.ui.theme.NetGuardTheme
 import com.example.netguardzte.ui.viewmodel.NetGuardViewModel
 
 class MainActivity : ComponentActivity() {
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -43,17 +42,18 @@ class MainActivity : ComponentActivity() {
 
                 Scaffold(
                     snackbarHost = { SnackbarHost(snackbarHostState) }
-                ) {
+                ) { padding ->
                     Spacer(Modifier.height(0.dp))
 
                     when (s.currentScreen) {
                         "login" -> LoginScreen(
-    viewModel = vm,
-    onLoginSuccess = { vm.navigateTo("devices") }
-)
+                            viewModel = vm,
+                            onLoginSuccess = { vm.navigateTo("devices") }
+                        )
 
                         "devices" -> DevicesScreen(
                             devices = s.devices,
+                            blockedMacs = s.blockedMacs,
                             isLoading = s.isLoadingDevices,
                             error = s.deviceError,
                             showBlockDialog = s.showBlockDialog,
@@ -61,15 +61,14 @@ class MainActivity : ComponentActivity() {
                             debugInfo = s.debugInfo,
                             isTestingRouter = s.isTestingRouter,
                             onRefresh = { vm.loadDevices() },
-                            onBlock = { vm.onBlockClicked(it) },
-                            onUnblock = { vm.onUnblockClicked(it) },
+                            onBlockClicked = { vm.onBlockClicked(it) },
                             onBlockConfirmed = { vm.onBlockConfirmed() },
                             onBlockCancelled = { vm.onBlockCancelled() },
-                            onNavigateToBlocked = { vm.navigateTo("blocked") },
-                            onNavigateToSettings = { vm.navigateTo("settings") },
+                            onUnblockClicked = { vm.onUnblockClicked(it) },
                             onToggleDebug = { vm.toggleDebugInfo() },
-                            onTestRouter = { vm.testRouter() }
-                            onDiscoverTraffic = { vm.discoverTraffic() }
+                            onTestRouter = { vm.testRouter() },
+                            onDiscoverTraffic = { vm.discoverTraffic() },
+                            onLogout = { vm.logout() }
                         )
 
                         "blocked" -> BlockedScreen(
