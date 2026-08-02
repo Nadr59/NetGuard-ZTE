@@ -5,8 +5,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.netguardzte.App
 import com.example.netguardzte.data.local.SecureStorage
+import com.example.netguardzte.data.local.TrafficStorage
 import com.example.netguardzte.data.repository.RouterRepository
 import com.example.netguardzte.domain.model.Device
+import com.example.netguardzte.domain.model.DeviceTraffic
+import com.example.netguardzte.domain.model.TrafficSnapshot
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -15,71 +18,7 @@ import kotlinx.coroutines.launch
 import java.io.PrintWriter
 import java.io.StringWriter
 
-import com.example.netguardzte.data.local.TrafficStorage
-import com.example.netguardzte.domain.model.DeviceTraffic
-import com.example.netguardzte.domain.model.TrafficSnapshot
-
 data class NetGuardUiState(
-        // ═══ في أعلى الكلاس ═══
-    private val trafficStorage = TrafficStorage(application)
-
-    // ═══ في NetGuardUiState أضف: ═══
-    val trafficData: List<DeviceTraffic> = emptyList(),
-    val isLoadingTraffic: Boolean = false,
-    val totalRx: Long = 0,
-    val totalTx: Long = 0,
-
-    // ═══ الدوال الجديدة: ═══
-    fun loadTraffic() {
-        _uiState.value = _uiState.value.copy(isLoadingTraffic = true)
-
-        viewModelScope.launch(errorHandler) {
-            try {
-                val trafficResult = repository.getTrafficData()
-                val devices = trafficResult.getOrNull() ?: emptyList()
-
-                // حفظ لقطة
-                if (devices.isNotEmpty()) {
-                    trafficStorage.saveSnapshot(
-                        TrafficSnapshot(
-                            timestamp = System.currentTimeMillis(),
-                            devices = devices,
-                            totalRx = _uiState.value.totalRx,
-                            totalTx = _uiState.value.totalTx
-                        )
-                    )
-                }
-
-                _uiState.value = _uiState.value.copy(
-                    isLoadingTraffic = false,
-                    trafficData = devices,
-                    deviceError = trafficResult.exceptionOrNull()?.message
-                )
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(
-                    isLoadingTraffic = false,
-                    deviceError = "Error: ${e.message}"
-                )
-            }
-        }
-    }
-
-    fun getDeviceTodayUsage(mac: String): Pair<Long, Long> {
-        return trafficStorage.getDeviceTodayUsage(mac)
-    }
-
-    fun getDeviceMonthUsage(mac: String): Pair<Long, Long> {
-        return trafficStorage.getDeviceMonthUsage(mac)
-    }
-
-    fun formatBytes(bytes: Long): String {
-        return when {
-            bytes >= 1_073_741_824 -> "%.1f GB".format(bytes / 1_073_741_824.0)
-            bytes >= 1_048_576 -> "%.1f MB".format(bytes / 1_048_576.0)
-            bytes >= 1_024 -> "%.1f KB".format(bytes / 1_024.0)
-            else -> "$bytes B"
-        }
-    }
     val currentScreen: String = "login",
     val routerIp: String = "192.168.0.1",
     val username: String = "admin",
@@ -96,13 +35,18 @@ data class NetGuardUiState(
     val showDebugInfo: Boolean = false,
     val debugInfo: String = "",
     val isTestingRouter: Boolean = false,
-    val crashInfo: String = ""
+    val crashInfo: String = "",
+    val trafficData: List<DeviceTraffic> = emptyList(),
+    val isLoadingTraffic: Boolean = false,
+    val totalRx: Long = 0,
+    val totalTx: Long = 0
 )
 
 class NetGuardViewModel(application: Application) : AndroidViewModel(application) {
 
     private lateinit var storage: SecureStorage
     lateinit var repository: RouterRepository
+    private lateinit var trafficStorage: TrafficStorage
 
     private val _uiState = MutableStateFlow(NetGuardUiState())
     val uiState: StateFlow<NetGuardUiState> = _uiState.asStateFlow()
@@ -116,6 +60,7 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
             isLoggingIn = false,
             isLoadingDevices = false,
             isTestingRouter = false,
+            isLoadingTraffic = false,
             loginError = throwable.message ?: "خطأ غير معروف",
             debugInfo = errorText,
             showDebugInfo = true
@@ -124,11 +69,13 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
 
     init {
         try {
-                    storage = SecureStorage(application)
-        repository = RouterRepository(storage, application)
-    } catch (e: Exception) {
-        storage = SecureStorage(application)
-        repository = RouterRepository(storage, application)
+            storage = SecureStorage(application)
+            repository = RouterRepository(storage, application)
+            trafficStorage = TrafficStorage(application)
+        } catch (e: Exception) {
+            storage = SecureStorage(application)
+            repository = RouterRepository(storage, application)
+            trafficStorage = TrafficStorage(application)
             saveError("Init error: ${e.message}")
         }
 
@@ -157,6 +104,18 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    // ═══════════════════════════════════════════
+    // NAVIGATION
+    // ═══════════════════════════════════════════
+
+    fun navigateTo(screen: String) {
+        _uiState.value = _uiState.value.copy(currentScreen = screen)
+    }
+
+    // ═══════════════════════════════════════════
+    // INPUT HANDLERS
+    // ═══════════════════════════════════════════
+
     fun onRouterIpChanged(ip: String) {
         _uiState.value = _uiState.value.copy(routerIp = ip, loginError = null)
     }
@@ -168,6 +127,10 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
     fun onPasswordChanged(p: String) {
         _uiState.value = _uiState.value.copy(password = p, loginError = null)
     }
+
+    // ═══════════════════════════════════════════
+    // LOGIN
+    // ═══════════════════════════════════════════
 
     fun login() {
         val s = _uiState.value
@@ -183,7 +146,7 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
             try {
                 val result = repository.login(s.routerIp, s.username, s.password)
                 result.fold(
-                    onSuccess = { msg: String ->
+                    onSuccess = { _: String ->
                         _uiState.value = _uiState.value.copy(
                             isLoggingIn = false,
                             currentScreen = "devices",
@@ -214,6 +177,14 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
             }
         }
     }
+
+    fun saveCredentials(ip: String, username: String, password: String) {
+        repository.saveCredentials(ip, username, password)
+    }
+
+    // ═══════════════════════════════════════════
+    // DEVICES
+    // ═══════════════════════════════════════════
 
     fun loadDevices() {
         _uiState.value = _uiState.value.copy(isLoadingDevices = true, deviceError = null)
@@ -257,36 +228,63 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun testRouter() {
-        _uiState.value = _uiState.value.copy(isTestingRouter = true)
+    // ═══════════════════════════════════════════
+    // TRAFFIC
+    // ═══════════════════════════════════════════
+
+    fun loadTraffic() {
+        _uiState.value = _uiState.value.copy(isLoadingTraffic = true)
 
         viewModelScope.launch(errorHandler) {
             try {
-                repository.testRouterConnection().fold(
-                    onSuccess = { result: String ->
-                        _uiState.value = _uiState.value.copy(
-                            isTestingRouter = false,
-                            showDebugInfo = true,
-                            debugInfo = result
+                val trafficResult = repository.getTrafficData()
+                val devices = trafficResult.getOrNull() ?: emptyList()
+
+                if (devices.isNotEmpty()) {
+                    trafficStorage.saveSnapshot(
+                        TrafficSnapshot(
+                            timestamp = System.currentTimeMillis(),
+                            devices = devices,
+                            totalRx = _uiState.value.totalRx,
+                            totalTx = _uiState.value.totalTx
                         )
-                    },
-                    onFailure = { e: Throwable ->
-                        _uiState.value = _uiState.value.copy(
-                            isTestingRouter = false,
-                            showDebugInfo = true,
-                            debugInfo = "Error: ${e.message}"
-                        )
-                    }
+                    )
+                }
+
+                _uiState.value = _uiState.value.copy(
+                    isLoadingTraffic = false,
+                    trafficData = devices,
+                    deviceError = trafficResult.exceptionOrNull()?.message
                 )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
-                    isTestingRouter = false,
-                    showDebugInfo = true,
-                    debugInfo = "Crash: ${e.message}"
+                    isLoadingTraffic = false,
+                    deviceError = "Error: ${e.message}"
                 )
             }
         }
     }
+
+    fun getDeviceTodayUsage(mac: String): Pair<Long, Long> {
+        return trafficStorage.getDeviceTodayUsage(mac)
+    }
+
+    fun getDeviceMonthUsage(mac: String): Pair<Long, Long> {
+        return trafficStorage.getDeviceMonthUsage(mac)
+    }
+
+    fun formatBytes(bytes: Long): String {
+        return when {
+            bytes >= 1_073_741_824 -> "%.1f GB".format(bytes / 1_073_741_824.0)
+            bytes >= 1_048_576 -> "%.1f MB".format(bytes / 1_048_576.0)
+            bytes >= 1_024 -> "%.1f KB".format(bytes / 1_024.0)
+            else -> "$bytes B"
+        }
+    }
+
+    // ═══════════════════════════════════════════
+    // BLOCK / UNBLOCK
+    // ═══════════════════════════════════════════
 
     fun onBlockClicked(device: Device) {
         _uiState.value = _uiState.value.copy(showBlockDialog = device)
@@ -358,17 +356,45 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
         _uiState.value = _uiState.value.copy(showUnblockDialog = null)
     }
 
+    // ═══════════════════════════════════════════
+    // DEBUG / TEST / LOGOUT
+    // ═══════════════════════════════════════════
+
+    fun testRouter() {
+        _uiState.value = _uiState.value.copy(isTestingRouter = true)
+
+        viewModelScope.launch(errorHandler) {
+            try {
+                repository.testRouterConnection().fold(
+                    onSuccess = { result: String ->
+                        _uiState.value = _uiState.value.copy(
+                            isTestingRouter = false,
+                            showDebugInfo = true,
+                            debugInfo = result
+                        )
+                    },
+                    onFailure = { e: Throwable ->
+                        _uiState.value = _uiState.value.copy(
+                            isTestingRouter = false,
+                            showDebugInfo = true,
+                            debugInfo = "Error: ${e.message}"
+                        )
+                    }
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isTestingRouter = false,
+                    showDebugInfo = true,
+                    debugInfo = "Crash: ${e.message}"
+                )
+            }
+        }
+    }
+
     fun toggleDebugInfo() {
         _uiState.value = _uiState.value.copy(
             showDebugInfo = !_uiState.value.showDebugInfo
         )
-    }
-
-    fun saveCredentials(ip: String, username: String, password: String) {
-    repository.saveCredentials(ip, username, password)
-    }
-    fun navigateTo(screen: String) {
-        _uiState.value = _uiState.value.copy(currentScreen = screen)
     }
 
     fun logout() {
@@ -387,25 +413,6 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
     fun onMessageShown() {
         _uiState.value = _uiState.value.copy(message = null)
     }
-        fun discoverTraffic() {
-        _uiState.value = _uiState.value.copy(isTestingRouter = true)
-
-        viewModelScope.launch(errorHandler) {
-            try {
-                val result = repository.discoverTrafficCommands()
-                _uiState.value = _uiState.value.copy(
-                    isTestingRouter = false,
-                    showDebugInfo = true,
-                    debugInfo = result.getOrNull() ?: "No result"
-                )
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(
-                    isTestingRouter = false,
-                    debugInfo = "Error: ${e.message}"
-                )
-            }
-        }
-        }
 
     fun clearCrashLog() {
         try {
@@ -416,13 +423,16 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
             _uiState.value = _uiState.value.copy(crashInfo = "")
         } catch (_: Exception) {}
     }
-     // في ViewModel:
 
-suspend fun diagnose(): String {
-    val result = repository.testRouterConnection()
-    return result.getOrNull() ?: "No result"
-}
-// أو في UI: اجعل زر "اختبار" يستدعي diagnosePost()
+    suspend fun diagnose(): String {
+        val result = repository.testRouterConnection()
+        return result.getOrNull() ?: "No result"
+    }
+
+    // ═══════════════════════════════════════════
+    // ERROR HANDLING
+    // ═══════════════════════════════════════════
+
     private fun saveError(text: String) {
         try {
             val prefs = getApplication<Application>()
