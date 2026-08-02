@@ -37,63 +37,52 @@ fun TrafficScreen(
             .background(Color(0xFF0D0D0D))
             .padding(16.dp)
     ) {
-        // ═══ العنوان ═══
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(
-                    Icons.Default.ArrowBack,
-                    contentDescription = "Back",
-                    tint = Color.White
-                )
+                Icon(Icons.Default.ArrowBack, "Back", tint = Color.White)
             }
             Text(
                 "استهلاك البيانات",
-                fontSize = 24.sp,
+                fontSize = 22.sp,
                 color = Color(0xFFE8C547),
                 fontWeight = FontWeight.Bold
             )
             IconButton(onClick = { viewModel.loadTraffic() }) {
-                Icon(
-                    Icons.Default.Refresh,
-                    contentDescription = "Refresh",
-                    tint = Color.White
-                )
+                Icon(Icons.Default.Refresh, "Refresh", tint = Color.White)
             }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
 
         if (s.isLoadingTraffic) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator(color = Color(0xFFE8C547))
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = Color(0xFFE8C547))
+                    Spacer(Modifier.height(8.dp))
+                    Text("جاري تحميل البيانات...", color = Color.Gray, fontSize = 14.sp)
+                }
             }
         } else if (s.trafficData.isEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    "لا توجد بيانات",
-                    color = Color.Gray,
-                    fontSize = 16.sp
-                )
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("لا توجد بيانات", color = Color.Gray, fontSize = 16.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { viewModel.loadTraffic() },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE8C547))
+                    ) {
+                        Text("إعادة المحاولة", color = Color.Black)
+                    }
+                }
             }
         } else {
-            LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(s.trafficData) { device ->
-                    TrafficCard(
-                        device = device,
-                        viewModel = viewModel
-                    )
+                    TrafficCard(device = device, viewModel = viewModel)
                 }
             }
         }
@@ -110,9 +99,7 @@ fun TrafficCard(
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = Color(0xFF1A1A1A)
-        ),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1A1A)),
         shape = RoundedCornerShape(12.dp)
     ) {
         Column(
@@ -120,15 +107,14 @@ fun TrafficCard(
                 .fillMaxWidth()
                 .padding(16.dp)
         ) {
-            // ═══ اسم الجهاز ═══
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
                     device.hostname,
                     color = Color.White,
-                    fontSize = 18.sp,
+                    fontSize = 17.sp,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
@@ -140,15 +126,13 @@ fun TrafficCard(
 
             Text(
                 "IP: ${device.ip} | MAC: ${device.mac}",
-                color = Color.Gray,
-                fontSize = 12.sp
+                color = Color.Gray, fontSize = 11.sp
             )
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(Modifier.height(12.dp))
 
-            // ═══ السرعة الحالية ═══
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column {
@@ -156,7 +140,7 @@ fun TrafficCard(
                     Text(
                         viewModel.formatBytes(device.rxSpeed) + "/s",
                         color = Color(0xFF4CAF50),
-                        fontSize = 16.sp,
+                        fontSize = 15.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -165,36 +149,32 @@ fun TrafficCard(
                     Text(
                         viewModel.formatBytes(device.txSpeed) + "/s",
                         color = Color(0xFF2196F3),
-                        fontSize = 16.sp,
+                        fontSize = 15.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // ═══ إجمالي الاستهلاك ═══
+            Spacer(Modifier.height(10.dp))
             Divider(color = Color(0xFF333333))
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(Modifier.height(8.dp))
 
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column {
                     Text("إجمالي التحميل", color = Color.Gray, fontSize = 11.sp)
                     Text(
                         viewModel.formatBytes(device.rxTotal),
-                        color = Color.White,
-                        fontSize = 14.sp
+                        color = Color.White, fontSize = 14.sp
                     )
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("إجمالي الرفع", color = Color.Gray, fontSize = 11.sp)
                     Text(
                         viewModel.formatBytes(device.txTotal),
-                        color = Color.White,
-                        fontSize = 14.sp
+                        color = Color.White, fontSize = 14.sp
                     )
                 }
                 Column(horizontalAlignment = Alignment.End) {
@@ -211,33 +191,29 @@ fun TrafficCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // ═══ اليوم والشهر ═══
             if (todayUsage.first > 0 || todayUsage.second > 0 ||
                 monthUsage.first > 0 || monthUsage.second > 0
             ) {
+                Spacer(Modifier.height(8.dp))
                 Divider(color = Color(0xFF333333))
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(Modifier.height(8.dp))
 
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column {
                         Text("اليوم", color = Color(0xFFE8C547), fontSize = 12.sp)
                         Text(
                             "↓${viewModel.formatBytes(todayUsage.first)} ↑${viewModel.formatBytes(todayUsage.second)}",
-                            color = Color.White,
-                            fontSize = 13.sp
+                            color = Color.White, fontSize = 13.sp
                         )
                     }
                     Column(horizontalAlignment = Alignment.End) {
                         Text("الشهر", color = Color(0xFFE8C547), fontSize = 12.sp)
                         Text(
                             "↓${viewModel.formatBytes(monthUsage.first)} ↑${viewModel.formatBytes(monthUsage.second)}",
-                            color = Color.White,
-                            fontSize = 13.sp
+                            color = Color.White, fontSize = 13.sp
                         )
                     }
                 }
