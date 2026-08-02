@@ -69,6 +69,7 @@ class MainActivity : ComponentActivity() {
                             onNavigateToSettings = { vm.navigateTo("settings") },
                             onToggleDebug = { vm.toggleDebugInfo() },
                             onTestRouter = { vm.testRouter() }
+                            onDiscoverTraffic = { vm.discoverTraffic() }
                         )
 
                         "blocked" -> BlockedScreen(
