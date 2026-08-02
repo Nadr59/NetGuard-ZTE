@@ -401,7 +401,6 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
             showDebugInfo = !_uiState.value.showDebugInfo
         )
     }
-
     fun logout() {
         viewModelScope.launch(errorHandler) {
             try {
@@ -414,6 +413,7 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
             username = storage.getUsername()
         )
     }
+    
 
     fun onMessageShown() {
         _uiState.value = _uiState.value.copy(message = null)
