@@ -14,7 +14,6 @@ import androidx.compose.ui.unit.sp
 import com.example.netguardzte.App
 import com.example.netguardzte.data.api.RetrofitClient
 import com.example.netguardzte.ui.viewmodel.NetGuardViewModel
-import kotlinx.coroutines.launch
 
 @Composable
 fun LoginScreen(
@@ -26,19 +25,9 @@ fun LoginScreen(
     var password by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf("") }
-    var isReady by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val executor = (context.applicationContext as App).commandExecutor
-    val scope = rememberCoroutineScope()
-
-    // ═══ تهيئة WebView عند بدء الشاشة ═══
-    LaunchedEffect(Unit) {
-        executor.init(routerIp) {
-            isReady = true
-            statusMessage = "جاهز للاتصال"
-        }
-    }
 
     Column(
         modifier = Modifier
@@ -107,19 +96,20 @@ fun LoginScreen(
 
                 RetrofitClient.setRouterAddress(routerIp)
 
-                executor.executeLogin(routerIp, password) { ok, msg ->
-                    isLoading = false
-                    if (ok) {
-                        viewModel.saveCredentials(routerIp, username, password)
-                        statusMessage = "تم الاتصال!"
-                        onLoginSuccess()
-                    } else {
-                        statusMessage = "فشل: $msg"
+                executor.init(routerIp) {
+                    executor.executeLogin(routerIp, password) { ok, msg ->
+                        isLoading = false
+                        if (ok) {
+                            viewModel.saveCredentials(routerIp, username, password)
+                            statusMessage = "تم الاتصال!"
+                            onLoginSuccess()
+                        } else {
+                            statusMessage = "فشل: $msg"
+                        }
                     }
                 }
             },
             modifier = Modifier.fillMaxWidth(),
-            enabled = isReady && !isLoading,
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE8C547)),
             shape = RoundedCornerShape(12.dp)
         ) {
