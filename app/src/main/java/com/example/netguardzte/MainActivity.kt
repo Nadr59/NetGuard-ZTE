@@ -72,7 +72,7 @@ class MainActivity : ComponentActivity() {
                             onUnblockClicked = { vm.onUnblockClicked(it) },
                             onToggleDebug = { vm.toggleDebugInfo() },
                             onTestRouter = { vm.testRouter() },
-                            onDiscoverTraffic = { vm.discoverTraffic() },
+                            onShowTraffic = { vm.navigateTo("traffic") },
                             onLogout = { vm.logout() }
                         )
 
