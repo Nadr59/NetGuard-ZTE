@@ -78,6 +78,7 @@ fun DevicesScreen(
     onNavigateToSettings: () -> Unit,
     onToggleDebug: () -> Unit,
     onTestRouter: () -> Unit
+    onDiscoverTraffic: () -> Unit
 ) {
     val context = LocalContext.current
     var copyMessage by remember { mutableStateOf<String?>(null) }
@@ -200,6 +201,9 @@ Text("⏳ جاري التحميل$dots")
                         Button(onClick = onRefresh) {
                             Text("تحديث")
                         }
+                        Button(onClick = { viewModel.discoverTraffic() }) {
+    Text("اكتشاف أوامر البيانات")
+                        }
                         if (isTestingRouter) {
                             Spacer(Modifier.height(16.dp))
                             CircularProgressIndicator()
@@ -297,10 +301,6 @@ Text("⏳ جاري التحميل$dots")
                     Text("حظر", color = MaterialTheme.colorScheme.error)
                 }
             },
-            // ابحث عن الأزرار الموجودة وأضف:
-Button(onClick = { viewModel.discoverTraffic() }) {
-    Text("اكتشاف أوامر البيانات")
-},
             dismissButton = {
                 TextButton(onClick = onBlockCancelled) {
                     Text("إلغاء")
