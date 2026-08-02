@@ -1,7 +1,6 @@
 package com.example.netguardzte.ui.screens.devices
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -45,7 +44,7 @@ fun DevicesScreen(
             .background(Color(0xFF0D0D0D))
             .padding(16.dp)
     ) {
-        // ═══ العنوان ═══
+        // ═══ العنوان + أزرار ═══
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -53,123 +52,118 @@ fun DevicesScreen(
         ) {
             Text(
                 "الأجهزة المتصلة",
-                fontSize = 24.sp,
+                fontSize = 22.sp,
                 color = Color(0xFFE8C547),
                 fontWeight = FontWeight.Bold
             )
             Row {
                 IconButton(onClick = onRefresh) {
-                    Icon(
-                        Icons.Default.Refresh,
-                        contentDescription = "Refresh",
-                        tint = Color.White
-                    )
+                    Icon(Icons.Default.Refresh, "Refresh", tint = Color.White)
                 }
                 IconButton(onClick = onLogout) {
-                    Icon(
-                        Icons.Default.ExitToApp,
-                        contentDescription = "Logout",
-                        tint = Color.White
-                    )
+                    Icon(Icons.Default.ExitToApp, "Logout", tint = Color.White)
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // ═══ أزرار ═══
+        // ═══ أزرار الإجراءات ═══
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Button(
                 onClick = onTestRouter,
                 enabled = !isTestingRouter,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF333333)
-                ),
-                modifier = Modifier.weight(1f)
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF333333)),
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
             ) {
                 if (isTestingRouter) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = Color.White
-                    )
+                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = Color.White)
                 } else {
-                    Text("اختبار", color = Color.White)
+                    Text("اختبار", color = Color.White, fontSize = 12.sp)
                 }
             }
 
-            
+            Button(
+                onClick = onShowTraffic,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B5E20)),
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+            ) {
+                Text("البيانات", color = Color.White, fontSize = 12.sp)
+            }
+
+            Button(
+                onClick = onToggleDebug,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF333333)),
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+            ) {
+                Text("Debug", color = Color.White, fontSize = 12.sp)
+            }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
 
         // ═══ الخطأ ═══
         error?.let {
-            Text(
-                it,
-                color = Color.Red,
-                fontSize = 14.sp,
-                modifier = Modifier.padding(vertical = 4.dp)
-            )
+            Text(it, color = Color.Red, fontSize = 13.sp)
+            Spacer(modifier = Modifier.height(4.dp))
         }
 
-        // ═══ Debug ═══
+        // ═══ Debug Info ═══
         if (showDebugInfo && debugInfo.isNotBlank()) {
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 200.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = Color(0xFF1A1A1A)
-                )
+                    .heightIn(max = 180.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1A1A))
             ) {
-                LazyColumn(
-                    modifier = Modifier.padding(8.dp)
-                ) {
+                LazyColumn(modifier = Modifier.padding(8.dp)) {
                     item {
-                        Text(
-                            debugInfo,
-                            color = Color(0xFF888888),
-                            fontSize = 10.sp
-                        )
+                        Text(debugInfo, color = Color(0xFF888888), fontSize = 10.sp)
                     }
                 }
             }
             Spacer(modifier = Modifier.height(8.dp))
         }
 
+        // ═══ عدد الأجهزة ═══
+        Text(
+            "${devices.size} جهاز متصل | ${blockedMacs.size} محظور",
+            color = Color.Gray,
+            fontSize = 13.sp
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
         // ═══ قائمة الأجهزة ═══
         if (isLoading) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = Color(0xFFE8C547))
             }
         } else if (devices.isEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    "لا توجد أجهزة متصلة",
-                    color = Color.Gray,
-                    fontSize = 16.sp
-                )
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("لا توجد أجهزة متصلة", color = Color.Gray, fontSize = 16.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = onRefresh,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE8C547))
+                    ) {
+                        Text("تحديث", color = Color.Black)
+                    }
+                }
             }
         } else {
-            LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(devices) { device ->
                     DeviceCard(
                         device = device,
-                        isBlocked = blockedMacs.any {
-                            it.uppercase() == device.mac.uppercase()
-                        },
+                        isBlocked = blockedMacs.any { it.uppercase() == device.mac.uppercase() },
                         onBlock = { onBlockClicked(device) },
                         onUnblock = { onUnblockClicked(device.mac) }
                     )
@@ -217,7 +211,7 @@ fun DeviceCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(14.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -225,27 +219,14 @@ fun DeviceCard(
                 Text(
                     device.hostname,
                     color = Color.White,
-                    fontSize = 16.sp,
+                    fontSize = 15.sp,
                     fontWeight = FontWeight.Bold
                 )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    "IP: ${device.ip}",
-                    color = Color.Gray,
-                    fontSize = 12.sp
-                )
-                Text(
-                    "MAC: ${device.mac}",
-                    color = Color.Gray,
-                    fontSize = 12.sp
-                )
+                Spacer(Modifier.height(2.dp))
+                Text("IP: ${device.ip}", color = Color.Gray, fontSize = 12.sp)
+                Text("MAC: ${device.mac}", color = Color.Gray, fontSize = 11.sp)
                 if (isBlocked) {
-                    Text(
-                        "محظور",
-                        color = Color.Red,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Text("محظور", color = Color.Red, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -253,22 +234,20 @@ fun DeviceCard(
                 if (isBlocked) {
                     Button(
                         onClick = onUnblock,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF2E7D32)
-                        ),
-                        shape = RoundedCornerShape(8.dp)
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                     ) {
-                        Text("إلغاء الحظر", color = Color.White, fontSize = 12.sp)
+                        Text("إلغاء الحظر", color = Color.White, fontSize = 11.sp)
                     }
                 } else {
                     Button(
                         onClick = onBlock,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFFC62828)
-                        ),
-                        shape = RoundedCornerShape(8.dp)
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828)),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                     ) {
-                        Text("حظر", color = Color.White, fontSize = 12.sp)
+                        Text("حظر", color = Color.White, fontSize = 11.sp)
                     }
                 }
             }
