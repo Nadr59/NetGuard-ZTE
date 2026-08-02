@@ -265,6 +265,53 @@ class RouterCommandExecutor(private val context: Context) {
             }
         }
     }
+        fun executeGet(
+        cmd: String,
+        callback: (String) -> Unit
+    ) {
+        handler.post {
+            val wv = webView ?: run {
+                callback("{}")
+                return@post
+            }
+            wv.evaluateJavascript("""
+                (function() {
+                    try {
+                        var xhr = new XMLHttpRequest();
+                        xhr.open('GET', '/goform/goform_get_cmd_process?cmd=$cmd', false);
+                        xhr.send();
+                        return xhr.responseText;
+                    } catch(e) { return '{}'; }
+                })();
+            """.trimIndent()) { result ->
+                callback(result.replace("\\\"", "\"").trim('"'))
+            }
+        }
+    }
+
+    fun executeGetUrl(
+        url: String,
+        callback: (String) -> Unit
+    ) {
+        handler.post {
+            val wv = webView ?: run {
+                callback("{}")
+                return@post
+            }
+            wv.evaluateJavascript("""
+                (function() {
+                    try {
+                        var xhr = new XMLHttpRequest();
+                        xhr.open('GET', '$url', false);
+                        xhr.send();
+                        return xhr.responseText;
+                    } catch(e) { return '{}'; }
+                })();
+            """.trimIndent()) { result ->
+                callback(result.replace("\\\"", "\"").trim('"'))
+            }
+        }
+    }
 
     fun destroy() {
         handler.post {
