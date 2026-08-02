@@ -14,6 +14,7 @@ import java.util.concurrent.TimeUnit
 class RouterCommandExecutor(private val context: Context) {
 
     private var webView: WebView? = null
+    var webViewRef: WebView? = null
     private var ready = false
     private val handler = Handler(Looper.getMainLooper())
 
@@ -22,6 +23,7 @@ class RouterCommandExecutor(private val context: Context) {
         handler.post {
             webView?.destroy()
             webView = WebView(context.applicationContext).apply {
+                webViewRef = this  
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.userAgentString = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36"
