@@ -225,81 +225,92 @@ class RouterRepository(
     // DISCOVER TRAFFIC COMMANDS
     // ═══════════════════════════════════════════
 
-    suspend fun discoverTrafficCommands(): Result<String> {
+        suspend fun discoverTrafficCommands(): Result<String> {
         return withContext(Dispatchers.IO) {
             val debug = StringBuilder()
-            val latch = CountDownLatch(1)
+
+            // ═══ أولاً: سجل دخول ═══
+            val loginLatch = CountDownLatch(1)
+            var loginOk = false
 
             executor.executeLogin(
                 storage.getRouterIp(),
                 storage.getPassword()
             ) { ok, _ ->
-                if (!ok) {
-                    debug.appendLine("Login failed")
-                    latch.countDown()
-                    return@executeLogin
-                }
+                loginOk = ok
+                loginLatch.countDown()
+            }
+            loginLatch.await(30, TimeUnit.SECONDS)
 
-                val commands = listOf(
-                    "data_counter", "monthly_data", "traffic_statistics",
-                    "station_traffic", "wifi_station_traffic",
-                    "lan_station_info", "station_list", "dhcp_list",
-                    "connected_device_info", "device_traffic",
-                    "device_data_usage", "wifi_client_list",
-                    "client_list", "current_station_list",
-                    "wlan_station_list", "station_statistics",
-                    "traffic_flow", "monthly_statistics",
-                    "data_usage", "bandwidth_list", "qos_list",
-                    "monthly_rx_tx", "curr_month_download",
-                    "curr_month_upload", "curr_day_download",
-                    "curr_day_upload", "total_rx_bytes",
-                    "total_tx_bytes", "monthly_time",
-                    "monitor_main", "traffic_record",
-                    "traffic_monitor", "data_flow_record",
-                    "monthly_data_statistics", "monthly_data_flow",
-                    "data_flow", "traffic_data", "device_data_flow",
-                    "all_data_flow", "station_data",
-                    "ap_station_list", "wps_info",
-                    "modem_main_state", "network_type",
-                    "signalbar", "dhcp_clients"
-                )
-
-                for (cmd in commands) {
-                    try {
-                        val cmdLatch = CountDownLatch(1)
-                        var cmdResult = ""
-
-                        executor.executeGet(cmd) { r ->
-                            cmdResult = r
-                            cmdLatch.countDown()
-                        }
-
-                        cmdLatch.await(5, TimeUnit.SECONDS)
-
-                        if (cmdResult.isNotBlank() &&
-                            !cmdResult.contains("ERROR") &&
-                            !cmdResult.contains("null") &&
-                            cmdResult.length > 10 &&
-                            cmdResult != "\"\"" &&
-                            cmdResult != "{}"
-                        ) {
-                            debug.appendLine("\n=== $cmd ===")
-                            debug.appendLine(cmdResult.take(500))
-                        }
-                    } catch (e: Exception) {
-                        debug.appendLine("$cmd error: ${e.message}")
-                    }
-                }
-
-                debug.appendLine("\n=== DONE ===")
-                latch.countDown()
+            if (!loginOk) {
+                debug.appendLine("Login failed!")
+                return@withContext Result.success(debug.toString())
             }
 
-            latch.await(120, TimeUnit.SECONDS)
+            debug.appendLine("Login OK")
+            debug.appendLine("Discovering traffic commands...")
+            debug.appendLine("(This may take 1-2 minutes)")
+            debug.appendLine("")
+
+            // ═══ ثانياً: اكتشف الأوامر واحد واحد ═══
+            val commands = listOf(
+                "data_counter", "monthly_data", "traffic_statistics",
+                "station_traffic", "wifi_station_traffic",
+                "lan_station_info", "station_list", "dhcp_list",
+                "connected_device_info", "device_traffic",
+                "device_data_usage", "wifi_client_list",
+                "client_list", "current_station_list",
+                "wlan_station_list", "station_statistics",
+                "traffic_flow", "monthly_statistics",
+                "data_usage", "bandwidth_list", "qos_list",
+                "monthly_rx_tx", "curr_month_download",
+                "curr_month_upload", "curr_day_download",
+                "curr_day_upload", "total_rx_bytes",
+                "total_tx_bytes", "monthly_time",
+                "monitor_main", "traffic_record",
+                "traffic_monitor", "data_flow_record",
+                "monthly_data_statistics", "monthly_data_flow",
+                "data_flow", "traffic_data", "device_data_flow",
+                "all_data_flow", "station_data",
+                "ap_station_list", "wps_info",
+                "modem_main_state", "network_type",
+                "signalbar", "dhcp_clients"
+            )
+
+            for (cmd in commands) {
+                try {
+                    val cmdLatch = CountDownLatch(1)
+                    var cmdResult = ""
+
+                    executor.executeGet(cmd) { r ->
+                        cmdResult = r
+                        cmdLatch.countDown()
+                    }
+
+                    cmdLatch.await(5, TimeUnit.SECONDS)
+
+                    if (cmdResult.isNotBlank() &&
+                        !cmdResult.contains("ERROR") &&
+                        !cmdResult.contains("null") &&
+                        cmdResult.length > 10 &&
+                        cmdResult != "\"\"" &&
+                        cmdResult != "{}"
+                    ) {
+                        debug.appendLine("=== $cmd ===")
+                        debug.appendLine(cmdResult.take(500))
+                        debug.appendLine("")
+                    }
+                } catch (e: Exception) {
+                    debug.appendLine("$cmd error: ${e.message}")
+                }
+            }
+
+            debug.appendLine("=== DONE ===")
             allCommandsDebug = debug.toString()
             Result.success(debug.toString())
         }
-    }
+        }
+    
 
     // ═══════════════════════════════════════════
     // DEVICES + BLOCKED + TEST + LOGOUT
