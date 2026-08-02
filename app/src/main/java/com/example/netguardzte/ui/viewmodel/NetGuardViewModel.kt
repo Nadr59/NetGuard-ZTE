@@ -67,7 +67,7 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
         )
     }
 
-    init {
+      init {
         try {
             storage = SecureStorage(application)
             repository = RouterRepository(storage, application)
@@ -95,14 +95,19 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
                 crashInfo = crash
             )
 
-            if (loggedIn && crash.isBlank()) {
-                try { loadDevices() } catch (_: Exception) {}
+            // ═══ هيئة WebView دائماً ═══
+            val executor = (application as App).commandExecutor
+            executor.init(ip) {
+                if (loggedIn && crash.isBlank()) {
+                    try { loadDevices() } catch (_: Exception) {}
+                }
             }
         } catch (e: Exception) {
             saveError("Init state error: ${e.message}")
             _uiState.value = NetGuardUiState(crashInfo = getStoredCrash())
         }
     }
+    
 
     // ═══════════════════════════════════════════
     // NAVIGATION
