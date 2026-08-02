@@ -15,7 +15,71 @@ import kotlinx.coroutines.launch
 import java.io.PrintWriter
 import java.io.StringWriter
 
+import com.example.netguardzte.data.local.TrafficStorage
+import com.example.netguardzte.domain.model.DeviceTraffic
+import com.example.netguardzte.domain.model.TrafficSnapshot
+
 data class NetGuardUiState(
+        // ═══ في أعلى الكلاس ═══
+    private val trafficStorage = TrafficStorage(application)
+
+    // ═══ في NetGuardUiState أضف: ═══
+    val trafficData: List<DeviceTraffic> = emptyList(),
+    val isLoadingTraffic: Boolean = false,
+    val totalRx: Long = 0,
+    val totalTx: Long = 0,
+
+    // ═══ الدوال الجديدة: ═══
+    fun loadTraffic() {
+        _uiState.value = _uiState.value.copy(isLoadingTraffic = true)
+
+        viewModelScope.launch(errorHandler) {
+            try {
+                val trafficResult = repository.getTrafficData()
+                val devices = trafficResult.getOrNull() ?: emptyList()
+
+                // حفظ لقطة
+                if (devices.isNotEmpty()) {
+                    trafficStorage.saveSnapshot(
+                        TrafficSnapshot(
+                            timestamp = System.currentTimeMillis(),
+                            devices = devices,
+                            totalRx = _uiState.value.totalRx,
+                            totalTx = _uiState.value.totalTx
+                        )
+                    )
+                }
+
+                _uiState.value = _uiState.value.copy(
+                    isLoadingTraffic = false,
+                    trafficData = devices,
+                    deviceError = trafficResult.exceptionOrNull()?.message
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isLoadingTraffic = false,
+                    deviceError = "Error: ${e.message}"
+                )
+            }
+        }
+    }
+
+    fun getDeviceTodayUsage(mac: String): Pair<Long, Long> {
+        return trafficStorage.getDeviceTodayUsage(mac)
+    }
+
+    fun getDeviceMonthUsage(mac: String): Pair<Long, Long> {
+        return trafficStorage.getDeviceMonthUsage(mac)
+    }
+
+    fun formatBytes(bytes: Long): String {
+        return when {
+            bytes >= 1_073_741_824 -> "%.1f GB".format(bytes / 1_073_741_824.0)
+            bytes >= 1_048_576 -> "%.1f MB".format(bytes / 1_048_576.0)
+            bytes >= 1_024 -> "%.1f KB".format(bytes / 1_024.0)
+            else -> "$bytes B"
+        }
+    }
     val currentScreen: String = "login",
     val routerIp: String = "192.168.0.1",
     val username: String = "admin",
