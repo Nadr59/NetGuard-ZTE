@@ -42,6 +42,24 @@ class RouterCommandExecutor(private val context: Context) {
         }
     }
 
+        fun executeLogout(callback: () -> Unit) {
+        handler.post {
+            val wv = webView ?: run { callback(); return@post }
+            wv.evaluateJavascript("""
+                (function() {
+                    try {
+                        var xhr = new XMLHttpRequest();
+                        xhr.open('POST', '/goform/goform_set_cmd_process', false);
+                        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+                        xhr.send('isTest=false&goformId=LOGOUT');
+                        return 'ok';
+                    } catch(e) { return 'error'; }
+                })();
+            """.trimIndent()) { _ ->
+                callback()
+            }
+        }
+    }
     fun executeLogin(
         ip: String,
         password: String,
