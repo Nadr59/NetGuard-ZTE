@@ -4,26 +4,28 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.webkit.CookieManager
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 
 class RouterCommandExecutor(private val context: Context) {
 
     private var webView: WebView? = null
     var webViewRef: WebView? = null
+        private set
     private var ready = false
     private val handler = Handler(Looper.getMainLooper())
+    private var currentIp: String = ""
 
     @SuppressLint("SetJavaScriptEnabled")
     fun init(ip: String, onReady: () -> Unit) {
+        currentIp = ip
         handler.post {
+            ready = false
             webView?.destroy()
             webView = WebView(context.applicationContext).apply {
-                webViewRef = this  
+                webViewRef = this
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.userAgentString = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36"
@@ -42,24 +44,10 @@ class RouterCommandExecutor(private val context: Context) {
         }
     }
 
-        fun executeLogout(callback: () -> Unit) {
-        handler.post {
-            val wv = webView ?: run { callback(); return@post }
-            wv.evaluateJavascript("""
-                (function() {
-                    try {
-                        var xhr = new XMLHttpRequest();
-                        xhr.open('POST', '/goform/goform_set_cmd_process', false);
-                        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-                        xhr.send('isTest=false&goformId=LOGOUT');
-                        return 'ok';
-                    } catch(e) { return 'error'; }
-                })();
-            """.trimIndent()) { _ ->
-                callback()
-            }
-        }
-    }
+    // ═══════════════════════════════════════════
+    // LOGIN مع LOGOUT أولاً
+    // ═══════════════════════════════════════════
+
     fun executeLogin(
         ip: String,
         password: String,
@@ -74,13 +62,13 @@ class RouterCommandExecutor(private val context: Context) {
             wv.evaluateJavascript("""
                 (function() {
                     try {
-                        // ═══ LOGOUT أولاً ═══
+                        // ═══ LOGOUT أولاً لإنهاء أي جلسة قديمة ═══
                         var lx = new XMLHttpRequest();
                         lx.open('POST', '/goform/goform_set_cmd_process', false);
                         lx.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
                         lx.send('isTest=false&goformId=LOGOUT');
 
-                        // ═══ انتظر قليلاً ═══
+                        // ═══ انتظر ثانيتين ═══
                         var start = new Date().getTime();
                         while (new Date().getTime() - start < 2000) {}
 
@@ -93,7 +81,7 @@ class RouterCommandExecutor(private val context: Context) {
 
                         if (!ld) return JSON.stringify({ok:false, msg:'LD empty'});
 
-                        // ═══ شفر ═══
+                        // ═══ شفر كلمة المرور ═══
                         var pass = '$password';
                         var shaPass = SHA256(pass);
                         var encoded = SHA256(shaPass + ld);
@@ -117,11 +105,9 @@ class RouterCommandExecutor(private val context: Context) {
                 val clean = result.replace("\\\"", "\"").trim('"')
                 val ok = clean.contains("\"ok\":true") || clean.contains("\"ok\": true")
 
-                // استخرج الكوكيز
                 val cookieMgr = CookieManager.getInstance()
                 val cookies = cookieMgr.getCookie("http://$ip") ?: ""
 
-                // حوّل الكوكيز لـ RetrofitClient
                 for (cookie in cookies.split(";")) {
                     val parts = cookie.trim().split("=", limit = 2)
                     if (parts.size == 2) {
@@ -133,6 +119,126 @@ class RouterCommandExecutor(private val context: Context) {
             }
         }
     }
+
+    // ═══════════════════════════════════════════
+    // LOGOUT
+    // ═══════════════════════════════════════════
+
+    fun executeLogout(callback: () -> Unit) {
+        handler.post {
+            val wv = webView ?: run { callback(); return@post }
+            wv.evaluateJavascript("""
+                (function() {
+                    try {
+                        var xhr = new XMLHttpRequest();
+                        xhr.open('POST', '/goform/goform_set_cmd_process', false);
+                        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+                        xhr.send('isTest=false&goformId=LOGOUT');
+                        return 'ok';
+                    } catch(e) { return 'error'; }
+                })();
+            """.trimIndent()) { _ ->
+                callback()
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════
+    // GET CMD
+    // ═══════════════════════════════════════════
+
+    fun executeGet(
+        cmd: String,
+        callback: (String) -> Unit
+    ) {
+        handler.post {
+            val wv = webView ?: run {
+                callback("{}")
+                return@post
+            }
+            wv.evaluateJavascript("""
+                (function() {
+                    try {
+                        var xhr = new XMLHttpRequest();
+                        xhr.open('GET', '/goform/goform_get_cmd_process?cmd=$cmd', false);
+                        xhr.send();
+                        return xhr.responseText;
+                    } catch(e) { return '{}'; }
+                })();
+            """.trimIndent()) { result ->
+                callback(
+                    if (result == null || result == "null") "{}"
+                    else result.replace("\\\"", "\"").trim('"')
+                )
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════
+    // GET URL
+    // ═══════════════════════════════════════════
+
+    fun executeGetUrl(
+        url: String,
+        callback: (String) -> Unit
+    ) {
+        handler.post {
+            val wv = webView ?: run {
+                callback("{}")
+                return@post
+            }
+            wv.evaluateJavascript("""
+                (function() {
+                    try {
+                        var xhr = new XMLHttpRequest();
+                        xhr.open('GET', '$url', false);
+                        xhr.send();
+                        return xhr.responseText;
+                    } catch(e) { return '{}'; }
+                })();
+            """.trimIndent()) { result ->
+                callback(
+                    if (result == null || result == "null") "{}"
+                    else result.replace("\\\"", "\"").trim('"')
+                )
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════
+    // ACL (قائمة الحظر)
+    // ═══════════════════════════════════════════
+
+    fun executeGetAcl(
+        ip: String,
+        callback: (String) -> Unit
+    ) {
+        handler.post {
+            val wv = webView ?: run {
+                callback("{}")
+                return@post
+            }
+            wv.evaluateJavascript("""
+                (function() {
+                    try {
+                        var xhr = new XMLHttpRequest();
+                        xhr.open('GET', '/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList', false);
+                        xhr.send();
+                        return xhr.responseText;
+                    } catch(e) { return '{}'; }
+                })();
+            """.trimIndent()) { result ->
+                callback(
+                    if (result == null || result == "null") "{}"
+                    else result.replace("\\\"", "\"").trim('"')
+                )
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════
+    // BLOCK DEVICE
+    // ═══════════════════════════════════════════
 
     fun executeBlock(
         ip: String,
@@ -148,12 +254,6 @@ class RouterCommandExecutor(private val context: Context) {
             wv.evaluateJavascript("""
                 (function() {
                     try {
-                        // ═══ اجلب LD ═══
-                        var ldXhr = new XMLHttpRequest();
-                        ldXhr.open('GET', '/goform/goform_get_cmd_process?cmd=LD', false);
-                        ldXhr.send();
-                        var ld = JSON.parse(ldXhr.responseText).LD || '';
-
                         // ═══ احسب AD ═══
                         var waXhr = new XMLHttpRequest();
                         waXhr.open('GET', '/goform/goform_get_cmd_process?cmd=wa_inner_version', false);
@@ -199,6 +299,10 @@ class RouterCommandExecutor(private val context: Context) {
             }
         }
     }
+
+    // ═══════════════════════════════════════════
+    // UNBLOCK DEVICE
+    // ═══════════════════════════════════════════
 
     fun executeUnblock(
         ip: String,
@@ -257,88 +361,15 @@ class RouterCommandExecutor(private val context: Context) {
         }
     }
 
-    fun executeGetAcl(
-        ip: String,
-        callback: (String) -> Unit
-    ) {
-        handler.post {
-            val wv = webView ?: run {
-                callback("{}")
-                return@post
-            }
-
-            wv.evaluateJavascript("""
-                (function() {
-                    try {
-                        var xhr = new XMLHttpRequest();
-                        xhr.open('GET', '/goform/goform_get_cmd_process?cmd=queryDeviceAccessControlList', false);
-                        xhr.send();
-                        return xhr.responseText;
-                    } catch(e) {
-                        return '{}';
-                    }
-                })();
-            """.trimIndent()) { result ->
-                callback(result.replace("\\\"", "\"").trim('"'))
-            }
-        }
-    }
-            fun executeGet(
-        cmd: String,
-        callback: (String) -> Unit
-    ) {
-        handler.post {
-            val wv = webView ?: run {
-                callback("{}")
-                return@post
-            }
-            wv.evaluateJavascript("""
-                (function() {
-                    try {
-                        var xhr = new XMLHttpRequest();
-                        xhr.open('GET', '/goform/goform_get_cmd_process?cmd=$cmd', false);
-                        xhr.send();
-                        return xhr.responseText;
-                    } catch(e) { return '{}'; }
-                })();
-            """.trimIndent()) { result ->
-                callback(
-                    if (result == null || result == "null") "{}"
-                    else result.replace("\\\"", "\"").trim('"')
-                )
-            }
-        }
-            }
-        
-
-    fun executeGetUrl(
-        url: String,
-        callback: (String) -> Unit
-    ) {
-        handler.post {
-            val wv = webView ?: run {
-                callback("{}")
-                return@post
-            }
-            wv.evaluateJavascript("""
-                (function() {
-                    try {
-                        var xhr = new XMLHttpRequest();
-                        xhr.open('GET', '$url', false);
-                        xhr.send();
-                        return xhr.responseText;
-                    } catch(e) { return '{}'; }
-                })();
-            """.trimIndent()) { result ->
-                callback(result.replace("\\\"", "\"").trim('"'))
-            }
-        }
-    }
+    // ═══════════════════════════════════════════
+    // DESTROY
+    // ═══════════════════════════════════════════
 
     fun destroy() {
         handler.post {
             webView?.destroy()
             webView = null
+            webViewRef = null
             ready = false
         }
     }
