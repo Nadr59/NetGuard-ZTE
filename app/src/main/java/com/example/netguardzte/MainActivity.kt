@@ -19,9 +19,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.netguardzte.ui.screens.blocked.BlockedScreen
 import com.example.netguardzte.ui.screens.devices.DevicesScreen
 import com.example.netguardzte.ui.screens.login.LoginScreen
+import com.example.netguardzte.ui.screens.traffic.TrafficScreen
 import com.example.netguardzte.ui.theme.NetGuardTheme
 import com.example.netguardzte.ui.viewmodel.NetGuardViewModel
-import com.example.netguardzte.ui.screens.traffic.TrafficScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -47,10 +47,6 @@ class MainActivity : ComponentActivity() {
                     Spacer(Modifier.height(0.dp))
 
                     when (s.currentScreen) {
-                        "traffic" -> TrafficScreen(
-    viewModel = vm,
-    onBack = { vm.navigateTo("devices") }
-)
                         "login" -> LoginScreen(
                             viewModel = vm,
                             onLoginSuccess = { vm.navigateTo("devices") }
@@ -83,6 +79,11 @@ class MainActivity : ComponentActivity() {
                             onUnblock = { vm.onUnblockClicked(it) },
                             onUnblockConfirmed = { vm.onUnblockConfirmed() },
                             onUnblockCancelled = { vm.onUnblockCancelled() }
+                        )
+
+                        "traffic" -> TrafficScreen(
+                            viewModel = vm,
+                            onBack = { vm.navigateTo("devices") }
                         )
                     }
                 }
