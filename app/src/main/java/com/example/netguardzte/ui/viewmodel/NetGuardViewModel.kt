@@ -323,6 +323,25 @@ class NetGuardViewModel(application: Application) : AndroidViewModel(application
     fun onMessageShown() {
         _uiState.value = _uiState.value.copy(message = null)
     }
+        fun discoverTraffic() {
+        _uiState.value = _uiState.value.copy(isTestingRouter = true)
+
+        viewModelScope.launch(errorHandler) {
+            try {
+                val result = repository.discoverTrafficCommands()
+                _uiState.value = _uiState.value.copy(
+                    isTestingRouter = false,
+                    showDebugInfo = true,
+                    debugInfo = result.getOrNull() ?: "No result"
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isTestingRouter = false,
+                    debugInfo = "Error: ${e.message}"
+                )
+            }
+        }
+        }
 
     fun clearCrashLog() {
         try {
