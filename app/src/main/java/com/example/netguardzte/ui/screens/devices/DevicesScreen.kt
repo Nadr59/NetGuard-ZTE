@@ -36,7 +36,7 @@ fun DevicesScreen(
     onUnblockClicked: (String) -> Unit,
     onToggleDebug: () -> Unit,
     onTestRouter: () -> Unit,
-    onDiscoverTraffic: () -> Unit,
+    onShowTraffic: () -> Unit,
     onLogout: () -> Unit
 ) {
     Column(
@@ -101,25 +101,7 @@ fun DevicesScreen(
                 }
             }
 
-            Button(
-                onClick = onDiscoverTraffic,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF333333)
-                ),
-                modifier = Modifier.weight(1f)
-            ) {
-                Text("اكتشاف البيانات", color = Color.White)
-            }
-
-            Button(
-                onClick = onToggleDebug,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF333333)
-                ),
-                modifier = Modifier.weight(1f)
-            ) {
-                Text("Debug", color = Color.White)
-            }
+            
         }
 
         Spacer(modifier = Modifier.height(8.dp))
