@@ -297,6 +297,10 @@ Text("⏳ جاري التحميل$dots")
                     Text("حظر", color = MaterialTheme.colorScheme.error)
                 }
             },
+            // ابحث عن الأزرار الموجودة وأضف:
+Button(onClick = { viewModel.discoverTraffic() }) {
+    Text("اكتشاف أوامر البيانات")
+},
             dismissButton = {
                 TextButton(onClick = onBlockCancelled) {
                     Text("إلغاء")
