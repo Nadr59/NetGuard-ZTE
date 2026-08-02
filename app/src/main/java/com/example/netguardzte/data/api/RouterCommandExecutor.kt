@@ -265,7 +265,7 @@ class RouterCommandExecutor(private val context: Context) {
             }
         }
     }
-        fun executeGet(
+            fun executeGet(
         cmd: String,
         callback: (String) -> Unit
     ) {
@@ -284,10 +284,14 @@ class RouterCommandExecutor(private val context: Context) {
                     } catch(e) { return '{}'; }
                 })();
             """.trimIndent()) { result ->
-                callback(result.replace("\\\"", "\"").trim('"'))
+                callback(
+                    if (result == null || result == "null") "{}"
+                    else result.replace("\\\"", "\"").trim('"')
+                )
             }
         }
-    }
+            }
+        
 
     fun executeGetUrl(
         url: String,
