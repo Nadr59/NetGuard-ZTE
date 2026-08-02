@@ -13,6 +13,7 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import com.example.netguardzte.domain.model.DeviceTraffic
 
 class RouterRepository(
     private val storage: SecureStorage,
@@ -310,7 +311,92 @@ class RouterRepository(
             Result.success(debug.toString())
         }
         }
-    
+        // ═══════════════════════════════════════════
+    // TRAFFIC DATA
+    // ═══════════════════════════════════════════
+
+    suspend fun getTrafficData(): Result<List<DeviceTraffic>> {
+        return withContext(Dispatchers.IO) {
+            val latch = CountDownLatch(1)
+            var resultOk = false
+            var resultData = ""
+
+            executor.executeLogin(
+                storage.getRouterIp(),
+                storage.getPassword()
+            ) { ok, _ ->
+                if (ok) {
+                    executor.executeGet("station_list") { r ->
+                        resultData = r
+                        resultOk = true
+                        latch.countDown()
+                    }
+                } else {
+                    latch.countDown()
+                }
+            }
+
+            latch.await(30, TimeUnit.SECONDS)
+
+            if (!resultOk || resultData.isBlank()) {
+                return@withContext Result.failure(Exception("Failed to get traffic data"))
+            }
+
+            try {
+                val devices = mutableListOf<DeviceTraffic>()
+                val json = org.json.JSONObject(resultData)
+                val arr = json.optJSONArray("station_list")
+
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val d = arr.getJSONObject(i)
+                        devices.add(
+                            DeviceTraffic(
+                                mac = d.optString("mac_addr", ""),
+                                hostname = d.optString("hostname", "Unknown"),
+                                ip = d.optString("ip_addr", ""),
+                                ssidIndex = d.optString("ssid_index", ""),
+                                txTotal = d.optLong("tx_total", 0),
+                                rxTotal = d.optLong("rx_total", 0),
+                                txSpeed = d.optLong("tx_speed", 0),
+                                rxSpeed = d.optLong("rx_speed", 0),
+                                rssi = d.optInt("rssi", 0)
+                            )
+                        )
+                    }
+                }
+
+                Result.success(devices)
+            } catch (e: Exception) {
+                Result.failure(Exception("Parse error: ${e.message}"))
+            }
+        }
+    }
+
+    suspend fun getTotalTraffic(): Result<Pair<Long, Long>> {
+        return withContext(Dispatchers.IO) {
+            val latch = CountDownLatch(2)
+            var rx = 0L
+            var tx = 0L
+
+            executor.executeGet("total_rx_bytes") { r ->
+                try {
+                    rx = org.json.JSONObject(r).optLong("total_rx_bytes", 0)
+                } catch (_: Exception) {}
+                latch.countDown()
+            }
+
+            executor.executeGet("total_tx_bytes") { r ->
+                try {
+                    tx = org.json.JSONObject(r).optLong("total_tx_bytes", 0)
+                } catch (_: Exception) {}
+                latch.countDown()
+            }
+
+            latch.await(10, TimeUnit.SECONDS)
+            Result.success(Pair(rx, tx))
+        }
+    }
 
     // ═══════════════════════════════════════════
     // DEVICES + BLOCKED + TEST + LOGOUT
