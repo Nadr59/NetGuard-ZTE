@@ -4,7 +4,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
@@ -35,10 +37,12 @@ fun TrafficScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF0D0D0D))
-            .padding(16.dp)
     ) {
+        // ═══ العنوان ثابت ═══
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -56,10 +60,12 @@ fun TrafficScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
-
+        // ═══ المحتوى القابل للتمرير ═══
         if (s.isLoadingTraffic) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(color = Color(0xFFE8C547))
                     Spacer(Modifier.height(8.dp))
@@ -67,7 +73,10 @@ fun TrafficScreen(
                 }
             }
         } else if (s.trafficData.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("لا توجد بيانات", color = Color.Gray, fontSize = 16.sp)
                     Spacer(Modifier.height(8.dp))
@@ -80,7 +89,13 @@ fun TrafficScreen(
                 }
             }
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                contentPadding = PaddingValues(bottom = 32.dp)
+            ) {
                 items(s.trafficData) { device ->
                     TrafficCard(device = device, viewModel = viewModel)
                 }
