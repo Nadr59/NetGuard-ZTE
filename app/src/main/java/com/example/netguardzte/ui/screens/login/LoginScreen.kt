@@ -1,5 +1,7 @@
 package com.example.netguardzte.ui.screens.login
 
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -37,7 +39,12 @@ fun LoginScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("NetGuard ZTE", fontSize = 28.sp, color = Color(0xFFE8C547))
+        Text(
+            text = "NetGuard ZTE",
+            fontSize = 28.sp,
+            color = Color(0xFFE8C547)
+        )
+
         Spacer(modifier = Modifier.height(32.dp))
 
         OutlinedTextField(
@@ -92,41 +99,29 @@ fun LoginScreen(
                     return@Button
                 }
                 isLoading = true
-                statusMessage = "جاري تسجيل الدخول..."
+                statusMessage = "جاري تحميل صفحة الراوتر..."
 
                 RetrofitClient.setRouterAddress(routerIp)
 
-                Button(
-    onClick = {
-        if (password.isBlank()) {
-            statusMessage = "اكتب كلمة المرور"
-            return@Button
-        }
-        isLoading = true
-        statusMessage = "جاري تحميل الصفحة..."
+                executor.init(routerIp) {
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        statusMessage = "جاري تسجيل الدخول..."
 
-        RetrofitClient.setRouterAddress(routerIp)
-
-        // ═══ أعد تهيئة WebView ═══
-        executor.init(routerIp) {
-            // ═══ انتظر 3 ثواني حتى تُحمَّل كل الملفات ═══
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                statusMessage = "جاري تسجيل الدخول..."
-
-                executor.executeLogin(routerIp, password) { ok, msg ->
-                    isLoading = false
-                    if (ok) {
-                        viewModel.saveCredentials(routerIp, username, password)
-                        statusMessage = "تم الاتصال!"
-                        onLoginSuccess()
-                    } else {
-                        statusMessage = "فشل: $msg"
-                    }
+                        executor.executeLogin(routerIp, password) { ok, msg ->
+                            isLoading = false
+                            if (ok) {
+                                viewModel.saveCredentials(routerIp, username, password)
+                                statusMessage = "تم الاتصال!"
+                                onLoginSuccess()
+                            } else {
+                                statusMessage = "فشل: $msg"
+                            }
+                        }
+                    }, 4000)
                 }
-            }, 3000) // انتظر 3 ثواني
-        }
-    },
+            },
             modifier = Modifier.fillMaxWidth(),
+            enabled = !isLoading,
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE8C547)),
             shape = RoundedCornerShape(12.dp)
         ) {
