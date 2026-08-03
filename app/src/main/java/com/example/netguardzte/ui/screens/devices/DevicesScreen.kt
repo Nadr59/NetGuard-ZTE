@@ -39,7 +39,12 @@ fun LoginScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("NetGuard ZTE", fontSize = 28.sp, color = Color(0xFFE8C547))
+        Text(
+            text = "NetGuard ZTE",
+            fontSize = 28.sp,
+            color = Color(0xFFE8C547)
+        )
+
         Spacer(modifier = Modifier.height(32.dp))
 
         OutlinedTextField(
@@ -98,9 +103,7 @@ fun LoginScreen(
 
                 RetrofitClient.setRouterAddress(routerIp)
 
-                // ═══ أعد تهيئة WebView ═══
                 executor.init(routerIp) {
-                    // ═══ انتظر 4 ثواني حتى تُحمَّل كل ملفات JavaScript ═══
                     Handler(Looper.getMainLooper()).postDelayed({
                         statusMessage = "جاري تسجيل الدخول..."
 
@@ -118,6 +121,7 @@ fun LoginScreen(
                 }
             },
             modifier = Modifier.fillMaxWidth(),
+            enabled = !isLoading,
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE8C547)),
             shape = RoundedCornerShape(12.dp)
         ) {
