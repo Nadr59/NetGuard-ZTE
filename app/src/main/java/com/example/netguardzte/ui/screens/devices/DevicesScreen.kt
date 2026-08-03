@@ -180,7 +180,76 @@ fun DevicesScreen(
             }
         }
     }
+        // ═══ عدد الأجهزة ═══
+        Text(
+            "${devices.size} جهاز متصل",
+            color = Color.Gray,
+            fontSize = 13.sp,
+            modifier = Modifier.padding(horizontal = 16.dp)
+        )
 
+        // ═══ أجهزة محظورة غير متصلة ═══
+        val connectedMacs = devices.map { it.mac.uppercase() }
+        val disconnectedBlocked = blockedMacs.filter { mac ->
+            mac.uppercase() !in connectedMacs
+        }
+
+        if (disconnectedBlocked.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "${disconnectedBlocked.size} جهاز محظور غير متصل",
+                color = Color.Red,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        // ═══ القائمة ═══
+        if (isLoading) {
+            // ... existing code ...
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(bottom = 32.dp)
+            ) {
+                // ═══ الأجهزة المتصلة ═══
+                items(devices) { device ->
+                    DeviceCard(
+                        device = device,
+                        isBlocked = blockedMacs.any {
+                            it.uppercase() == device.mac.uppercase()
+                        },
+                        onBlock = { onBlockClicked(device) },
+                        onUnblock = { onUnblockClicked(device.mac) }
+                    )
+                }
+
+                // ═══ أجهزة محظورة غير متصلة ═══
+                if (disconnectedBlocked.isNotEmpty()) {
+                    item {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "أجهزة محظورة غير متصلة",
+                            color = Color(0xFFE8C547),
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    items(disconnectedBlocked) { mac ->
+                        BlockedDeviceCard(
+                            mac = mac,
+                            onUnblock = { onUnblockClicked(mac) }
+                        )
+                    }
+                }
+            }
+        }
     // ═══ حوار الحظر ═══
     if (showBlockDialog != null) {
         AlertDialog(
@@ -259,6 +328,55 @@ fun DeviceCard(
                         Text("حظر", color = Color.White, fontSize = 11.sp)
                     }
                 }
+            }
+        }
+    }
+}
+@Composable
+fun BlockedDeviceCard(
+    mac: String,
+    onUnblock: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = Color(0xFF2A1A1A)
+        ),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "جهاز محظور",
+                    color = Color.White,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(2.dp))
+                Text("MAC: $mac", color = Color.Gray, fontSize = 11.sp)
+                Text(
+                    "غير متصل",
+                    color = Color.Red,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Button(
+                onClick = onUnblock,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF2E7D32)
+                ),
+                shape = RoundedCornerShape(8.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Text("إلغاء الحظر", color = Color.White, fontSize = 11.sp)
             }
         }
     }
