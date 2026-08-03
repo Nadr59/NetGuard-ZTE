@@ -96,19 +96,36 @@ fun LoginScreen(
 
                 RetrofitClient.setRouterAddress(routerIp)
 
-                executor.init(routerIp) {
-                    executor.executeLogin(routerIp, password) { ok, msg ->
-                        isLoading = false
-                        if (ok) {
-                            viewModel.saveCredentials(routerIp, username, password)
-                            statusMessage = "تم الاتصال!"
-                            onLoginSuccess()
-                        } else {
-                            statusMessage = "فشل: $msg"
-                        }
+                Button(
+    onClick = {
+        if (password.isBlank()) {
+            statusMessage = "اكتب كلمة المرور"
+            return@Button
+        }
+        isLoading = true
+        statusMessage = "جاري تحميل الصفحة..."
+
+        RetrofitClient.setRouterAddress(routerIp)
+
+        // ═══ أعد تهيئة WebView ═══
+        executor.init(routerIp) {
+            // ═══ انتظر 3 ثواني حتى تُحمَّل كل الملفات ═══
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                statusMessage = "جاري تسجيل الدخول..."
+
+                executor.executeLogin(routerIp, password) { ok, msg ->
+                    isLoading = false
+                    if (ok) {
+                        viewModel.saveCredentials(routerIp, username, password)
+                        statusMessage = "تم الاتصال!"
+                        onLoginSuccess()
+                    } else {
+                        statusMessage = "فشل: $msg"
                     }
                 }
-            },
+            }, 3000) // انتظر 3 ثواني
+        }
+    },
             modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE8C547)),
             shape = RoundedCornerShape(12.dp)
