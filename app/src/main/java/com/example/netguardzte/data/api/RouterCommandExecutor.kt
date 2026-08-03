@@ -5,7 +5,6 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.webkit.CookieManager
-import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
 
@@ -45,58 +44,78 @@ class RouterCommandExecutor(private val context: Context) {
     }
 
     // ═══════════════════════════════════════════
-    // LOGIN مع LOGOUT أولاً
+    // LOGIN
     // ═══════════════════════════════════════════
 
-        wv.evaluateJavascript("""
-        (function() {
-            try {
-                // ═══ تحقق أن SHA256 موجودة ═══
-                if (typeof SHA256 === 'undefined') {
-                    return JSON.stringify({ok:false, msg:'SHA256 not loaded yet'});
+    fun executeLogin(
+        ip: String,
+        password: String,
+        callback: (Boolean, String) -> Unit
+    ) {
+        handler.post {
+            val wv = webView ?: run {
+                callback(false, "WebView not ready")
+                return@post
+            }
+
+            wv.evaluateJavascript("""
+                (function() {
+                    try {
+                        if (typeof SHA256 === 'undefined') {
+                            return JSON.stringify({ok:false, msg:'SHA256 not loaded'});
+                        }
+
+                        var lx = new XMLHttpRequest();
+                        lx.open('POST', '/goform/goform_set_cmd_process', false);
+                        lx.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+                        lx.send('isTest=false&goformId=LOGOUT');
+
+                        var start = new Date().getTime();
+                        while (new Date().getTime() - start < 2000) {}
+
+                        var ldXhr = new XMLHttpRequest();
+                        ldXhr.open('GET', '/goform/goform_get_cmd_process?cmd=LD', false);
+                        ldXhr.send();
+                        var ldData = JSON.parse(ldXhr.responseText);
+                        var ld = ldData.LD;
+
+                        if (!ld) return JSON.stringify({ok:false, msg:'LD empty'});
+
+                        var pass = '$password';
+                        var shaPass = SHA256(pass);
+                        var encoded = SHA256(shaPass + ld);
+
+                        var xhr = new XMLHttpRequest();
+                        xhr.open('POST', '/goform/goform_set_cmd_process', false);
+                        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+                        xhr.send('isTest=false&goformId=LOGIN&password=' + encoded + '&save_login=false');
+
+                        return JSON.stringify({
+                            ok: xhr.responseText.indexOf('"result":"0"') >= 0 || xhr.responseText.indexOf('"result":0') >= 0,
+                            response: xhr.responseText
+                        });
+                    } catch(e) {
+                        return JSON.stringify({ok:false, msg:e.toString()});
+                    }
+                })();
+            """.trimIndent()) { result ->
+                val clean = if (result == null || result == "null") "{}"
+                            else result.replace("\\\"", "\"").trim('"')
+                val ok = clean.contains("\"ok\":true") || clean.contains("\"ok\": true")
+
+                val cookieMgr = CookieManager.getInstance()
+                val cookies = cookieMgr.getCookie("http://$ip") ?: ""
+                for (cookie in cookies.split(";")) {
+                    val parts = cookie.trim().split("=", limit = 2)
+                    if (parts.size == 2) {
+                        RetrofitClient.setSessionCookie(parts[0].trim(), parts[1].trim())
+                    }
                 }
 
-                // ═══ LOGOUT أولاً ═══
-                var lx = new XMLHttpRequest();
-                lx.open('POST', '/goform/goform_set_cmd_process', false);
-                lx.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-                lx.send('isTest=false&goformId=LOGOUT');
-
-                // ═══ انتظر ثانيتين ═══
-                var start = new Date().getTime();
-                while (new Date().getTime() - start < 2000) {}
-
-                // ═══ اجلب LD ═══
-                var ldXhr = new XMLHttpRequest();
-                ldXhr.open('GET', '/goform/goform_get_cmd_process?cmd=LD', false);
-                ldXhr.send();
-                var ldData = JSON.parse(ldXhr.responseText);
-                var ld = ldData.LD;
-
-                if (!ld) return JSON.stringify({ok:false, msg:'LD empty'});
-
-                // ═══ شفر ═══
-                var pass = '$password';
-                var shaPass = SHA256(pass);
-                var encoded = SHA256(shaPass + ld);
-
-                // ═══ LOGIN ═══
-                var xhr = new XMLHttpRequest();
-                xhr.open('POST', '/goform/goform_set_cmd_process', false);
-                xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-                xhr.send('isTest=false&goformId=LOGIN&password=' + encoded + '&save_login=false');
-
-                return JSON.stringify({
-                    ok: xhr.responseText.indexOf('"result":"0"') >= 0 || xhr.responseText.indexOf('"result":0') >= 0,
-                    response: xhr.responseText,
-                    ld: ld.substring(0, 16)
-                });
-            } catch(e) {
-                return JSON.stringify({ok:false, msg:e.toString()});
+                callback(ok, clean)
             }
-        })();
-    """.trimIndent()) { result ->
-    
+        }
+    }
 
     // ═══════════════════════════════════════════
     // LOGOUT
@@ -153,38 +172,7 @@ class RouterCommandExecutor(private val context: Context) {
     }
 
     // ═══════════════════════════════════════════
-    // GET URL
-    // ═══════════════════════════════════════════
-
-    fun executeGetUrl(
-        url: String,
-        callback: (String) -> Unit
-    ) {
-        handler.post {
-            val wv = webView ?: run {
-                callback("{}")
-                return@post
-            }
-            wv.evaluateJavascript("""
-                (function() {
-                    try {
-                        var xhr = new XMLHttpRequest();
-                        xhr.open('GET', '$url', false);
-                        xhr.send();
-                        return xhr.responseText;
-                    } catch(e) { return '{}'; }
-                })();
-            """.trimIndent()) { result ->
-                callback(
-                    if (result == null || result == "null") "{}"
-                    else result.replace("\\\"", "\"").trim('"')
-                )
-            }
-        }
-    }
-
-    // ═══════════════════════════════════════════
-    // ACL (قائمة الحظر)
+    // GET ACL
     // ═══════════════════════════════════════════
 
     fun executeGetAcl(
@@ -215,7 +203,7 @@ class RouterCommandExecutor(private val context: Context) {
     }
 
     // ═══════════════════════════════════════════
-    // BLOCK DEVICE
+    // BLOCK
     // ═══════════════════════════════════════════
 
     fun executeBlock(
@@ -232,7 +220,6 @@ class RouterCommandExecutor(private val context: Context) {
             wv.evaluateJavascript("""
                 (function() {
                     try {
-                        // ═══ احسب AD ═══
                         var waXhr = new XMLHttpRequest();
                         waXhr.open('GET', '/goform/goform_get_cmd_process?cmd=wa_inner_version', false);
                         waXhr.send();
@@ -253,7 +240,6 @@ class RouterCommandExecutor(private val context: Context) {
                             ad = SHA256(SHA256(wa + cr) + rd);
                         }
 
-                        // ═══ ارسل الحظر ═══
                         var body = 'isTest=false&goformId=setDeviceAccessControlList' +
                             '&AclMode=2&BlackMacList=' + encodeURIComponent('$macList') +
                             '&WhiteMacList=&WhiteNameList=&BlackNameList=&AD=' + ad;
@@ -269,7 +255,8 @@ class RouterCommandExecutor(private val context: Context) {
                     }
                 })();
             """.trimIndent()) { result ->
-                val clean = result.replace("\\\"", "\"").trim('"')
+                val clean = if (result == null || result == "null") "{}"
+                            else result.replace("\\\"", "\"").trim('"')
                 val ok = clean.contains("\"result\":\"success\"") ||
                          clean.contains("\"result\":0") ||
                          clean.contains("\"result\":\"0\"")
@@ -279,7 +266,7 @@ class RouterCommandExecutor(private val context: Context) {
     }
 
     // ═══════════════════════════════════════════
-    // UNBLOCK DEVICE
+    // UNBLOCK
     // ═══════════════════════════════════════════
 
     fun executeUnblock(
@@ -330,7 +317,8 @@ class RouterCommandExecutor(private val context: Context) {
                     }
                 })();
             """.trimIndent()) { result ->
-                val clean = result.replace("\\\"", "\"").trim('"')
+                val clean = if (result == null || result == "null") "{}"
+                            else result.replace("\\\"", "\"").trim('"')
                 val ok = clean.contains("\"result\":\"success\"") ||
                          clean.contains("\"result\":0") ||
                          clean.contains("\"result\":\"0\"")
