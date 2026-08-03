@@ -48,77 +48,55 @@ class RouterCommandExecutor(private val context: Context) {
     // LOGIN مع LOGOUT أولاً
     // ═══════════════════════════════════════════
 
-    fun executeLogin(
-        ip: String,
-        password: String,
-        callback: (Boolean, String) -> Unit
-    ) {
-        handler.post {
-            val wv = webView ?: run {
-                callback(false, "WebView not ready")
-                return@post
-            }
-
-            wv.evaluateJavascript("""
-                (function() {
-                    try {
-                        // ═══ LOGOUT أولاً لإنهاء أي جلسة قديمة ═══
-                        var lx = new XMLHttpRequest();
-                        lx.open('POST', '/goform/goform_set_cmd_process', false);
-                        lx.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-                        lx.send('isTest=false&goformId=LOGOUT');
-
-                        // ═══ انتظر ثانيتين ═══
-                        var start = new Date().getTime();
-                        while (new Date().getTime() - start < 2000) {}
-
-                        // ═══ اجلب LD ═══
-                        var ldXhr = new XMLHttpRequest();
-                        ldXhr.open('GET', '/goform/goform_get_cmd_process?cmd=LD', false);
-                        ldXhr.send();
-                        var ldData = JSON.parse(ldXhr.responseText);
-                        var ld = ldData.LD;
-
-                        if (!ld) return JSON.stringify({ok:false, msg:'LD empty'});
-
-                        // ═══ شفر كلمة المرور ═══
-                        var pass = '$password';
-                        var shaPass = SHA256(pass);
-                        var encoded = SHA256(shaPass + ld);
-
-                        // ═══ LOGIN ═══
-                        var xhr = new XMLHttpRequest();
-                        xhr.open('POST', '/goform/goform_set_cmd_process', false);
-                        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-                        xhr.send('isTest=false&goformId=LOGIN&password=' + encoded + '&save_login=false');
-
-                        return JSON.stringify({
-                            ok: xhr.responseText.indexOf('"result":"0"') >= 0 || xhr.responseText.indexOf('"result":0') >= 0,
-                            response: xhr.responseText,
-                            ld: ld.substring(0, 16)
-                        });
-                    } catch(e) {
-                        return JSON.stringify({ok:false, msg:e.toString()});
-                    }
-                })();
-            """.trimIndent()) { result ->
-                val clean = result.replace("\\\"", "\"").trim('"')
-                val ok = clean.contains("\"ok\":true") || clean.contains("\"ok\": true")
-
-                val cookieMgr = CookieManager.getInstance()
-                val cookies = cookieMgr.getCookie("http://$ip") ?: ""
-
-                for (cookie in cookies.split(";")) {
-                    val parts = cookie.trim().split("=", limit = 2)
-                    if (parts.size == 2) {
-                        RetrofitClient.setSessionCookie(parts[0].trim(), parts[1].trim())
-                    }
+        wv.evaluateJavascript("""
+        (function() {
+            try {
+                // ═══ تحقق أن SHA256 موجودة ═══
+                if (typeof SHA256 === 'undefined') {
+                    return JSON.stringify({ok:false, msg:'SHA256 not loaded yet'});
                 }
 
-                callback(ok, clean)
+                // ═══ LOGOUT أولاً ═══
+                var lx = new XMLHttpRequest();
+                lx.open('POST', '/goform/goform_set_cmd_process', false);
+                lx.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+                lx.send('isTest=false&goformId=LOGOUT');
+
+                // ═══ انتظر ثانيتين ═══
+                var start = new Date().getTime();
+                while (new Date().getTime() - start < 2000) {}
+
+                // ═══ اجلب LD ═══
+                var ldXhr = new XMLHttpRequest();
+                ldXhr.open('GET', '/goform/goform_get_cmd_process?cmd=LD', false);
+                ldXhr.send();
+                var ldData = JSON.parse(ldXhr.responseText);
+                var ld = ldData.LD;
+
+                if (!ld) return JSON.stringify({ok:false, msg:'LD empty'});
+
+                // ═══ شفر ═══
+                var pass = '$password';
+                var shaPass = SHA256(pass);
+                var encoded = SHA256(shaPass + ld);
+
+                // ═══ LOGIN ═══
+                var xhr = new XMLHttpRequest();
+                xhr.open('POST', '/goform/goform_set_cmd_process', false);
+                xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+                xhr.send('isTest=false&goformId=LOGIN&password=' + encoded + '&save_login=false');
+
+                return JSON.stringify({
+                    ok: xhr.responseText.indexOf('"result":"0"') >= 0 || xhr.responseText.indexOf('"result":0') >= 0,
+                    response: xhr.responseText,
+                    ld: ld.substring(0, 16)
+                });
+            } catch(e) {
+                return JSON.stringify({ok:false, msg:e.toString()});
             }
-        }
-    }
+        })();
+    """.trimIndent()) { result ->
+    
 
     // ═══════════════════════════════════════════
     // LOGOUT
