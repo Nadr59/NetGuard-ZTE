@@ -53,24 +53,27 @@ class MainActivity : ComponentActivity() {
                         )
 
                         "devices" -> DevicesScreen(
-                            devices = s.devices,
-                            blockedMacs = s.blockedMacs,
-                            isLoading = s.isLoadingDevices,
-                            error = s.deviceError,
-                            showBlockDialog = s.showBlockDialog,
-                            showDebugInfo = s.showDebugInfo,
-                            debugInfo = s.debugInfo,
-                            isTestingRouter = s.isTestingRouter,
-                            onRefresh = { vm.loadDevices() },
-                            onBlockClicked = { vm.onBlockClicked(it) },
-                            onBlockConfirmed = { vm.onBlockConfirmed() },
-                            onBlockCancelled = { vm.onBlockCancelled() },
-                            onUnblockClicked = { vm.onUnblockClicked(it) },
-                            onToggleDebug = { vm.toggleDebugInfo() },
-                            onTestRouter = { vm.testRouter() },
-                            onShowTraffic = { vm.navigateTo("traffic") },
-                            onLogout = { vm.logout() }
-                        )
+    devices = s.devices,
+    blockedMacs = s.blockedMacs,
+    isLoading = s.isLoadingDevices,
+    error = s.deviceError,
+    showBlockDialog = s.showBlockDialog,
+    showUnblockDialog = s.showUnblockDialog,
+    showDebugInfo = s.showDebugInfo,
+    debugInfo = s.debugInfo,
+    isTestingRouter = s.isTestingRouter,
+    onRefresh = { vm.loadDevices() },
+    onBlockClicked = { vm.onBlockClicked(it) },
+    onBlockConfirmed = { vm.onBlockConfirmed() },
+    onBlockCancelled = { vm.onBlockCancelled() },
+    onUnblockClicked = { vm.onUnblockClicked(it) },
+    onUnblockConfirmed = { vm.onUnblockConfirmed() },
+    onUnblockCancelled = { vm.onUnblockCancelled() },
+    onToggleDebug = { vm.toggleDebugInfo() },
+    onTestRouter = { vm.testRouter() },
+    onShowTraffic = { vm.navigateTo("traffic") },
+    onLogout = { vm.logout() }
+)
 
                         "blocked" -> BlockedScreen(
                             blockedMacs = s.blockedMacs,
