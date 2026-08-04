@@ -1,6 +1,8 @@
 package com.example.netguardzte.ui.screens.devices
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -25,6 +27,7 @@ fun DevicesScreen(
     isLoading: Boolean,
     error: String?,
     showBlockDialog: Device?,
+    showUnblockDialog: String?,
     showDebugInfo: Boolean,
     debugInfo: String,
     isTestingRouter: Boolean,
@@ -33,6 +36,8 @@ fun DevicesScreen(
     onBlockConfirmed: () -> Unit,
     onBlockCancelled: () -> Unit,
     onUnblockClicked: (String) -> Unit,
+    onUnblockConfirmed: () -> Unit,
+    onUnblockCancelled: () -> Unit,
     onToggleDebug: () -> Unit,
     onTestRouter: () -> Unit,
     onShowTraffic: () -> Unit,
@@ -212,6 +217,7 @@ fun DevicesScreen(
         }
     }
 
+    // ═══ حوار الحظر ═══
     if (showBlockDialog != null) {
         AlertDialog(
             onDismissRequest = onBlockCancelled,
@@ -227,6 +233,27 @@ fun DevicesScreen(
             dismissButton = {
                 TextButton(onClick = onBlockCancelled) {
                     Text("إلغاء")
+                }
+            }
+        )
+    }
+
+    // ═══ حوار فك الحظر ═══
+    if (showUnblockDialog != null) {
+        AlertDialog(
+            onDismissRequest = onUnblockCancelled,
+            title = { Text("إلغاء الحظر") },
+            text = {
+                Text("هل تريد إلغاء حظر هذا الجهاز؟\nMAC: $showUnblockDialog")
+            },
+            confirmButton = {
+                TextButton(onClick = onUnblockConfirmed) {
+                    Text("إلغاء الحظر", color = Color(0xFF4CAF50))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onUnblockCancelled) {
+                    Text("تراجع")
                 }
             }
         )
